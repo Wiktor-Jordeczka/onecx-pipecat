@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Turn Boundary Prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17201d;
+      --muted: #63706b;
+      --paper: #f5f3ed;
+      --panel: #fffefa;
+      --line: #d8d5ca;
+      --accent: #007f68;
+      --accent-soft: #d9eee8;
+      --danger: #a33b32;
+      --danger-soft: #f8e3df;
+      --warning: #8a6200;
+      --warning-soft: #f8edc8;
+      --radius: 6px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: repeating-linear-gradient(0deg, var(--paper), var(--paper) 31px, #eeece5 32px);
+      color: var(--ink);
+      font-family: "IBM Plex Sans", "Source Sans 3", sans-serif;
+      letter-spacing: 0;
+    }
+    button { font: inherit; letter-spacing: 0; }
+    .shell { width: min(1500px, 100%); margin: 0 auto; padding: 28px; }
+    header { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; margin-bottom: 24px; }
+    h1 { margin: 0 0 8px; font-family: "IBM Plex Serif", Georgia, serif; font-size: clamp(30px, 4vw, 52px); font-weight: 500; line-height: 1.04; }
+    .lede { max-width: 880px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.5; }
+    .prototype-flag { border: 1px solid var(--danger); color: var(--danger); padding: 7px 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .85fr); gap: 18px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .panel-head { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-head h2 { margin: 0; font-size: 16px; }
+    .panel-body { padding: 16px; }
+    .status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+    .status { background: var(--panel); padding: 13px 14px; min-height: 76px; }
+    .status span, .metric span { display: block; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
+    .status strong { display: block; font-size: 15px; overflow-wrap: anywhere; }
+    .ok { color: var(--accent); }
+    .warn { color: var(--warning); }
+    .bad { color: var(--danger); }
+    .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); }
+    .tab { border: 0; border-right: 1px solid var(--line); background: #f0eee7; color: var(--muted); padding: 11px 13px; white-space: nowrap; cursor: pointer; }
+    .tab.active { background: var(--panel); color: var(--ink); box-shadow: inset 0 -3px var(--accent); }
+    .scenario-copy { min-height: 74px; }
+    .scenario-copy h3 { margin: 0 0 6px; font-size: 17px; }
+    .scenario-copy p { margin: 0; color: var(--muted); line-height: 1.4; }
+    .step-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .action { border: 1px solid var(--line); background: white; color: var(--ink); border-radius: 4px; padding: 8px 11px; cursor: pointer; }
+    .action:hover { border-color: var(--accent); }
+    .action.next { background: var(--accent); border-color: var(--accent); color: white; }
+    .action.done { background: var(--accent-soft); color: #245348; }
+    .action:disabled { cursor: default; opacity: .48; }
+    .free-play { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .free-play .action { text-align: left; min-height: 42px; }
+    .timeline { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow: auto; }
+    .event { display: grid; grid-template-columns: 78px 110px 1fr; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .event:last-child { border-bottom: 0; }
+    .event-time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+    .owner { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--accent); overflow-wrap: anywhere; }
+    .event strong { display: block; font-size: 14px; margin-bottom: 3px; }
+    .event p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .event.rejected { background: var(--danger-soft); }
+    .event.rejected .owner { color: var(--danger); }
+    .empty { color: var(--muted); padding: 28px 16px; text-align: center; }
+    .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .metric { border: 1px solid var(--line); padding: 10px; min-height: 66px; }
+    .metric strong { font-variant-numeric: tabular-nums; font-size: 17px; }
+    .entries { display: grid; gap: 7px; }
+    .entry { border-left: 3px solid var(--line); padding: 8px 10px; background: #f6f4ee; }
+    .entry.hidden { border-left-color: var(--warning); }
+    .entry strong { display: block; font-size: 13px; }
+    .entry span { color: var(--muted); font-size: 12px; }
+    .notice { margin: 0 0 12px; padding: 10px 12px; background: var(--warning-soft); color: #5f480d; font-size: 13px; }
+    .reset { border: 0; color: var(--accent); background: transparent; cursor: pointer; font-weight: 700; }
+    footer { color: var(--muted); font-size: 12px; margin-top: 16px; }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .status-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 620px) {
+      .shell { padding: 16px; }
+      header { grid-template-columns: 1fr; }
+      .free-play { grid-template-columns: 1fr 1fr; }
+      .event { grid-template-columns: 58px 82px 1fr; gap: 8px; padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>One voice turn, every boundary visible</h1>
+        <p class="lede">Does the proposed event and state model preserve a voice turn across streaming, persistence, interruption, failures, and delayed tool approval without hiding ownership between services?</p>
+      </div>
+      <div class="prototype-flag">Throwaway prototype</div>
+    </header>
+
+    <section class="panel" aria-labelledby="scenario-title">
+      <div class="tabs" id="tabs"></div>
+      <div class="panel-body">
+        <div class="scenario-copy">
+          <h3 id="scenario-title">Successful voice turn</h3>
+          <p id="scenario-description"></p>
+        </div>
+        <div class="step-list" id="scenario-steps"></div>
+      </div>
+    </section>
+
+    <div class="layout" style="margin-top:18px">
+      <div>
+        <section class="panel">
+          <div class="panel-head"><h2>Current state</h2><button class="reset" id="reset">Reset scenario</button></div>
+          <div class="status-grid" id="status-grid"></div>
+        </section>
+
+        <section class="panel" style="margin-top:18px">
+          <div class="panel-head"><h2>Cross-service event timeline</h2><span id="event-count"></span></div>
+          <ol class="timeline" id="timeline"></ol>
+        </section>
+      </div>
+
+      <aside>
+        <section class="panel">
+          <div class="panel-head"><h2>Observed timing</h2></div>
+          <div class="panel-body"><div class="metrics" id="metrics"></div></div>
+        </section>
+
+        <section class="panel" style="margin-top:18px">
+          <div class="panel-head"><h2>Persisted conversation entries</h2></div>
+          <div class="panel-body">
+            <p class="notice">Hidden entries are retained for deterministic replay but are not shown as ordinary chat messages.</p>
+            <div class="entries" id="entries"></div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top:18px">
+          <div class="panel-head"><h2>Free play</h2></div>
+          <div class="panel-body"><div class="free-play" id="free-play"></div></div>
+        </section>
+      </aside>
+    </div>
+    <footer>PROTOTYPE: in-memory state only. Timing values are illustrative observations, not SLO targets.</footer>
+  </main>
+
+  <script>
+    const initialState = () => ({
+      clock: 0,
+      session: "IDLE",
+      microphone: "OFF",
+      transport: "DISCONNECTED",
+      turn: "NONE",
+      transcript: "NONE",
+      assistant: "NONE",
+      audio: "NONE",
+      proposal: "NONE",
+      decisionState: "NONE",
+      executionState: "NONE",
+      degraded: [],
+      events: [],
+      entries: [],
+      milestones: { setup: null, firstTranscript: null, firstAudio: null, totalTurn: null }
+    });
+
+    const actionCatalog = {
+      START_SESSION: ["Start voice session", "chat-ui"],
+      CONNECT: ["Connect stream", "Pipecat"],
+      START_SPEAKING: ["Start speaking", "chat-ui"],
+      PARTIAL_TRANSCRIPT: ["Receive partial transcript", "AWS Transcribe"],
+      FINAL_TRANSCRIPT: ["Finalize transcript", "AWS Transcribe"],
+      LOAD_CONFIGURATION: ["Pin agent configuration", "provider-svc"],
+      START_ASSISTANT: ["Start assistant response", "Pipecat"],
+      FIRST_AUDIO: ["Play first audio", "AWS Polly"],
+      COMPLETE_TURN: ["Complete voice turn", "chat-svc"],
+      BARGE_IN: ["Interrupt assistant", "chat-ui"],
+      DISCONNECT: ["Disconnect client", "chat-ui"],
+      RECONNECT: ["Reconnect and replay", "chat-svc"],
+      STT_FAILURE: ["Fail speech recognition", "AWS Transcribe"],
+      TTS_FAILURE: ["Fail speech synthesis", "AWS Polly"],
+      MCP_FAILURE: ["Fail MCP invocation", "MCP server"],
+      PROPOSE_TOOL: ["Propose protected tool call", "Pipecat"],
+      CONTINUE_CHAT: ["Continue conversation", "chat-ui"],
+      APPROVE_TOOL: ["Approve proposal later", "chat-ui"],
+      EXECUTE_TOOL: ["Execute approved tool", "Pipecat"],
+      COMPLETE_CONTINUATION: ["Complete assistant continuation", "chat-svc"]
+    };
+
+    const scenarios = [
+      {
+        id: "happy",
+        title: "Successful voice turn",
+        description: "The canonical spine: explicit start, streaming transcript, pinned configuration, assistant audio, and durable completion.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "PARTIAL_TRANSCRIPT", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "FIRST_AUDIO", "COMPLETE_TURN"]
+      },
+      {
+        id: "barge",
+        title: "Barge-in",
+        description: "The user interrupts audible assistant output. The spoken segment is finalized before a new human turn begins.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "FIRST_AUDIO", "BARGE_IN", "START_SPEAKING"]
+      },
+      {
+        id: "reconnect",
+        title: "Disconnect and replay",
+        description: "The transport disappears after persisted output. Reconnect rebuilds the visible conversation without reviving the old run.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "FIRST_AUDIO", "DISCONNECT", "RECONNECT"]
+      },
+      {
+        id: "stt",
+        title: "STT failure",
+        description: "Recognition fails before a final human turn exists. The session remains usable and no fabricated transcript is persisted.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "PARTIAL_TRANSCRIPT", "STT_FAILURE", "START_SPEAKING"]
+      },
+      {
+        id: "tts",
+        title: "TTS failure",
+        description: "Assistant text survives speech synthesis failure. Voice degrades while the persisted answer remains available for display.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "TTS_FAILURE", "COMPLETE_TURN"]
+      },
+      {
+        id: "mcp",
+        title: "MCP failure",
+        description: "An allowed tool fails. A hidden structured failure result lets the assistant continue without pretending the call succeeded.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "MCP_FAILURE", "COMPLETE_CONTINUATION"]
+      },
+      {
+        id: "approval",
+        title: "Delayed approval",
+        description: "ALWAYS_ASK ends the active run and persists a proposal. Conversation continues; approval later starts a serialized continuation.",
+        steps: ["START_SESSION", "CONNECT", "START_SPEAKING", "FINAL_TRANSCRIPT", "LOAD_CONFIGURATION", "START_ASSISTANT", "PROPOSE_TOOL", "CONTINUE_CHAT", "APPROVE_TOOL", "EXECUTE_TOOL", "COMPLETE_CONTINUATION"]
+      }
+    ];
+
+    const addEvent = (state, owner, name, detail, rejected = false) => ({
+      ...state,
+      clock: state.clock + 125,
+      events: [...state.events, { at: state.clock + 125, owner, name, detail, rejected }]
+    });
+
+    const reject = (state, action, reason) => addEvent(state, actionCatalog[action][1], actionCatalog[action][0], `Rejected: ${reason}`, true);
+    const appendEntry = (state, kind, text, hidden = false) => ({ ...state, entries: [...state.entries, { kind, text, hidden }] });
+
+    function reduceVoiceTurn(state, action) { // NOSONAR - explicit transitions are the subject of this prototype
+      let next = state;
+      switch (action) {
+        case "START_SESSION":
+          if (state.session !== "IDLE") return reject(state, action, "a voice session already exists");
+          next = { ...state, session: "STARTING", microphone: "READY" };
+          return addEvent(next, "chat-ui", "Voice session requested", "Explicit user action creates a persistent AI_CHAT session.");
+        case "CONNECT":
+          if (state.session !== "STARTING" && state.transport !== "DISCONNECTED") return reject(state, action, "session is not waiting for transport");
+          next = { ...state, session: "ACTIVE", transport: "CONNECTED", milestones: { ...state.milestones, setup: state.clock + 125 } };
+          return addEvent(next, "Pipecat", "Streaming transport connected", "Authenticated tenant and principal context are bound to the session.");
+        case "START_SPEAKING":
+          if (state.session !== "ACTIVE" || state.transport !== "CONNECTED") return reject(state, action, "voice transport is not active");
+          if (state.turn === "LISTENING") return reject(state, action, "already listening");
+          next = { ...state, microphone: "CAPTURING", turn: "LISTENING", transcript: "PARTIAL", assistant: "NONE", audio: "NONE" };
+          return addEvent(next, "chat-ui", "Human speech started", "Audio frames flow to Pipecat and AWS Transcribe.");
+        case "PARTIAL_TRANSCRIPT":
+          if (state.turn !== "LISTENING") return reject(state, action, "no active human speech");
+          next = { ...state, transcript: "PARTIAL", milestones: { ...state.milestones, firstTranscript: state.milestones.firstTranscript ?? state.clock + 125 } };
+          return addEvent(next, "AWS Transcribe", "Partial transcript emitted", "Caption is visible but not yet a durable human turn.");
+        case "FINAL_TRANSCRIPT":
+          if (state.turn !== "LISTENING") return reject(state, action, "no active human speech to finalize");
+          next = { ...state, microphone: "READY", turn: "PROCESSING", transcript: "FINAL" };
+          next = appendEntry(next, "HUMAN", "Finalized spoken request");
+          return addEvent(next, "chat-svc", "Human turn persisted", "Final transcript receives a stable conversation sequence and idempotency key.");
+        case "LOAD_CONFIGURATION":
+          if (state.turn !== "PROCESSING") return reject(state, action, "no finalized turn needs configuration");
+          return addEvent(state, "provider-svc", "Agent snapshot pinned", "Pipecat pins snapshot and discovered-tool-set versions for this run.");
+        case "START_ASSISTANT":
+          if (state.turn !== "PROCESSING") return reject(state, action, "no finalized human turn is processing");
+          next = { ...state, assistant: "STREAMING", audio: "SYNTHESIZING" };
+          return addEvent(next, "Pipecat", "Assistant stream started", "Text deltas and synthesis input are correlated to the turn.");
+        case "FIRST_AUDIO":
+          if (state.assistant !== "STREAMING" || state.audio !== "SYNTHESIZING") return reject(state, action, "assistant audio is not being synthesized");
+          next = { ...state, audio: "PLAYING", milestones: { ...state.milestones, firstAudio: state.clock + 125 } };
+          next = appendEntry(next, "ASSISTANT_CHECKPOINT", "Model-consumed assistant segment", true);
+          return addEvent(next, "AWS Polly", "First assistant audio played", "Audible output has a persisted hidden checkpoint for interruption recovery.");
+        case "COMPLETE_TURN":
+          if (state.turn !== "PROCESSING" || state.assistant !== "STREAMING") return reject(state, action, "assistant response is not active");
+          next = { ...state, turn: "COMPLETE", assistant: "FINAL", audio: state.audio === "FAILED" ? "FAILED" : "COMPLETE", milestones: { ...state.milestones, totalTurn: state.clock + 125 } };
+          next = appendEntry(next, "ASSISTANT", "Final assistant response");
+          return addEvent(next, "chat-svc", "Voice turn finalized", "Assistant output is durable; the session remains active for another turn.");
+        case "BARGE_IN":
+          if (state.audio !== "PLAYING") return reject(state, action, "there is no audible assistant output to interrupt");
+          next = { ...state, turn: "INTERRUPTED", assistant: "INTERRUPTED", audio: "STOPPED", microphone: "READY" };
+          next = appendEntry(next, "ASSISTANT", "Interrupted assistant segment");
+          return addEvent(next, "Pipecat", "Interruption broadcast", "Playback stops and the emitted segment is finalized before listening resumes.");
+        case "DISCONNECT":
+          if (state.transport !== "CONNECTED") return reject(state, action, "transport is already disconnected");
+          next = { ...state, transport: "DISCONNECTED", microphone: "OFF", audio: state.audio === "PLAYING" ? "STOPPED" : state.audio };
+          return addEvent(next, "Pipecat", "Client transport lost", "Active run ends; persisted entries remain authoritative.");
+        case "RECONNECT":
+          if (state.transport !== "DISCONNECTED" || state.session === "IDLE") return reject(state, action, "there is no persistent session to reconnect");
+          next = { ...state, session: "ACTIVE", transport: "CONNECTED", microphone: "READY", turn: "NONE", assistant: "NONE", audio: "NONE" };
+          return addEvent(next, "chat-svc", "Session replayed after reconnect", "Visible entries and hidden checkpoints rebuild state without reviving the old run.");
+        case "STT_FAILURE":
+          if (state.turn !== "LISTENING") return reject(state, action, "speech recognition is not active");
+          next = { ...state, microphone: "READY", turn: "FAILED", transcript: "FAILED", degraded: [...state.degraded, "STT"] };
+          return addEvent(next, "AWS Transcribe", "Speech recognition failed", "No final human entry is created; the user may retry in the same session.");
+        case "TTS_FAILURE":
+          if (state.assistant !== "STREAMING" || state.audio !== "SYNTHESIZING") return reject(state, action, "speech synthesis is not active");
+          next = { ...state, audio: "FAILED", degraded: [...state.degraded, "TTS"] };
+          return addEvent(next, "AWS Polly", "Speech synthesis failed", "Assistant text continues and remains available for display.");
+        case "MCP_FAILURE":
+          if (state.assistant !== "STREAMING") return reject(state, action, "assistant has not requested a tool");
+          next = { ...state, executionState: "FAILED", degraded: [...state.degraded, "MCP"] };
+          next = appendEntry(next, "TOOL_RESULT", "Sanitized MCP failure result", true);
+          return addEvent(next, "MCP server", "Allowed tool invocation failed", "Structured failure returns to one bounded assistant continuation.");
+        case "PROPOSE_TOOL":
+          if (state.assistant !== "STREAMING") return reject(state, action, "assistant has not produced a protected tool call");
+          next = { ...state, turn: "AWAITING_DECISION", assistant: "PAUSED", audio: "STOPPED", proposal: "PENDING", decisionState: "PENDING", executionState: "NOT_STARTED" };
+          next = appendEntry(next, "TOOL_PROPOSAL", "Protected call with pinned snapshot, schema, and argument hashes", true);
+          return addEvent(next, "chat-svc", "Tool Call Proposal persisted", "The active Pipecat run ends. The proposal does not expire.");
+        case "CONTINUE_CHAT":
+          if (state.proposal !== "PENDING") return reject(state, action, "no durable proposal is waiting while chat continues");
+          next = appendEntry(state, "HUMAN", "Newer message while proposal remains pending");
+          return addEvent(next, "chat-ui", "Conversation continued", "The pending proposal remains causally linked to its originating turn.");
+        case "APPROVE_TOOL":
+          if (state.decisionState !== "PENDING") return reject(state, action, "proposal is not awaiting a decision");
+          next = { ...state, proposal: "APPROVED", decisionState: "APPROVED" };
+          next = appendEntry(next, "TOOL_DECISION", "Single-use approval by proposing principal", true);
+          return addEvent(next, "chat-svc", "Proposal approved", "Policy, credentials, tool presence, schema, and arguments must be revalidated.");
+        case "EXECUTE_TOOL":
+          if (state.decisionState !== "APPROVED" || state.executionState !== "NOT_STARTED") return reject(state, action, "a fresh approved proposal is required");
+          next = { ...state, executionState: "SUCCEEDED", proposal: "CONSUMED", assistant: "CONTINUING", turn: "PROCESSING" };
+          next = appendEntry(next, "TOOL_RESULT", "Exact model-consumed tool result", true);
+          return addEvent(next, "Pipecat", "Approved tool invoked once", "A new serialized continuation uses current conversation state and the causal result.");
+        case "COMPLETE_CONTINUATION":
+          if (state.executionState !== "SUCCEEDED" && state.executionState !== "FAILED") return reject(state, action, "no tool outcome needs an assistant continuation");
+          next = { ...state, turn: "COMPLETE", assistant: "FINAL", audio: "NONE", milestones: { ...state.milestones, totalTurn: state.clock + 125 } };
+          next = appendEntry(next, "ASSISTANT", "Bounded continuation after tool outcome");
+          return addEvent(next, "chat-svc", "Assistant continuation persisted", "Result is appended at the conversation tail and linked to the proposal.");
+        default:
+          return state;
+      }
+    }
+
+    let state = initialState();
+    let activeScenario = scenarios[0];
+    let completedSteps = 0;
+
+    const $ = id => document.getElementById(id);
+    function statusTone(value) {
+      if (["ACTIVE", "CONNECTED", "FINAL", "COMPLETE", "SUCCEEDED", "APPROVED"].includes(value)) return "ok";
+      if (["FAILED", "DENIED", "CANCELLED"].includes(value)) return "bad";
+      if (["PROCESSING", "STREAMING", "PLAYING", "PENDING", "AWAITING_DECISION"].includes(value)) return "warn";
+      return "";
+    }
+
+    function stepTone(index) {
+      if (index < completedSteps) return "done";
+      if (index === completedSteps) return "next";
+      return "";
+    }
+    const formatMs = value => value == null ? "Not observed" : `${value} ms`;
+
+    function render() {
+      $("tabs").innerHTML = scenarios.map(s => `<button class="tab ${s.id === activeScenario.id ? "active" : ""}" data-scenario="${s.id}">${s.title}</button>`).join("");
+      $("scenario-title").textContent = activeScenario.title;
+      $("scenario-description").textContent = activeScenario.description;
+      $("scenario-steps").innerHTML = activeScenario.steps.map((action, index) => `<button class="action ${stepTone(index)}" data-step="${index}" ${index > completedSteps ? "disabled" : ""}>${index + 1}. ${actionCatalog[action][0]}</button>`).join("");
+
+      const statuses = [
+        ["Session", state.session], ["Transport", state.transport], ["Turn", state.turn], ["Microphone", state.microphone],
+        ["Transcript", state.transcript], ["Assistant", state.assistant], ["Audio", state.audio], ["Proposal", state.proposal]
+      ];
+      $("status-grid").innerHTML = statuses.map(([label, value]) => `<div class="status"><span>${label}</span><strong class="${statusTone(value)}">${value}</strong></div>`).join("");
+
+      $("event-count").textContent = `${state.events.length} events`;
+      $("timeline").innerHTML = state.events.length ? state.events.map(event => `<li class="event ${event.rejected ? "rejected" : ""}"><div class="event-time">+${event.at} ms</div><div class="owner">${event.owner}</div><div><strong>${event.name}</strong><p>${event.detail}</p></div></li>`).join("") : `<li class="empty">Choose the first guided step or use free play.</li>`;
+      $("timeline").scrollTop = $("timeline").scrollHeight;
+
+      const metrics = [["Session setup", state.milestones.setup], ["First transcript", state.milestones.firstTranscript], ["First audio", state.milestones.firstAudio], ["Total turn", state.milestones.totalTurn]];
+      $("metrics").innerHTML = metrics.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${formatMs(value)}</strong></div>`).join("");
+      $("entries").innerHTML = state.entries.length ? state.entries.map(entry => `<div class="entry ${entry.hidden ? "hidden" : ""}"><strong>${entry.kind}</strong><span>${entry.text}${entry.hidden ? " · hidden" : ""}</span></div>`).join("") : `<div class="empty">No durable entries yet.</div>`;
+      $("free-play").innerHTML = Object.entries(actionCatalog).map(([action, [label]]) => `<button class="action" data-action="${action}">${label}</button>`).join("");
+
+      for (const button of document.querySelectorAll("[data-scenario]")) button.onclick = () => selectScenario(button.dataset.scenario);
+      for (const button of document.querySelectorAll("[data-step]")) button.onclick = () => runStep(Number(button.dataset.step));
+      for (const button of document.querySelectorAll("[data-action]")) button.onclick = () => dispatch(button.dataset.action, false);
+    }
+
+    function selectScenario(id) {
+      activeScenario = scenarios.find(s => s.id === id);
+      state = initialState();
+      completedSteps = 0;
+      render();
+    }
+
+    function runStep(index) {
+      if (index !== completedSteps) return;
+      dispatch(activeScenario.steps[index], true);
+    }
+
+    function dispatch(action, guided) {
+      state = reduceVoiceTurn(state, action);
+      if (guided) completedSteps += 1;
+      render();
+    }
+
+    $("reset").onclick = () => selectScenario(activeScenario.id);
+    render();
+  </script>
+</body>
+</html>
