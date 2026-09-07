@@ -1,0 +1,60 @@
+= Adapter interfaces
+
+The application composes six replaceable adapters. Each capability is a
+`typing.Protocol` in `onecx_pipecat/adapters/` and ships with an
+in-memory implementation that is safe to construct with zero cloud
+credentials. Swapping a capability means writing a new class that
+satisfies the same `Protocol` and pointing the corresponding factory
+function in `onecx_pipecat/adapters/factory.py` at it.
+
+== Authentication
+
+* Protocol: `AuthAdapter.authenticate(token) -> Principal`
+* In-memory: `InMemoryAuthAdapter`
+
+Raise `AuthenticationError` for tokens that are not in the local table.
+`seed(token, subject, tenant_id, roles)` is a test-only convenience.
+
+== Agent Configuration
+
+* Protocol: `AgentConfigAdapter.pin(tenant_id, agent_id) -> AgentConfigSnapshot`
+* In-memory: `InMemoryAgentConfigAdapter`
+
+Returns the highest-registered `version` for the (tenant, agent) pair.
+`register(tenant_id, agent_id, version, system_prompt, tool_names)` seeds
+the table.
+
+== Speech
+
+* Protocols: `SttAdapter.transcribe(audio_bytes) -> str`,
+  `TtsAdapter.synthesize(text) -> bytes`
+* In-memory: `InMemorySttAdapter`, `InMemoryTtsAdapter`
+
+Deterministic; the STT returns a fixed transcript for non-empty input and
+the TTS returns UTF-8 bytes of the input text.
+
+== Persistence
+
+* Protocol: `ConversationPersistence` — `append(session_id, entry) -> id`,
+  `list_entries(session_id) -> list[VoiceEntry]`,
+  `get(session_id, entry_id) -> VoiceEntry | None`
+* In-memory: `InMemoryPersistence`
+
+Assigns a stable entry id per session and preserves order.
+
+== Permission
+
+* Protocol: `PermissionAdapter.evaluate(proposal) -> PermissionDecision`
+* In-memory: `InMemoryPermissionAdapter`
+
+Tools whose name begins with `write_`, `delete_`, or `send_` are
+`ALWAYS_ASK`; everything else is `ALLOW`.
+
+== MCP
+
+* Protocol: `McpAdapter.invoke(proposal, args) -> McpToolResult`
+* In-memory: `InMemoryMcpAdapter`
+
+Unknown tools return a sanitized `McpToolResult(ok=False, error=...)` so
+the assistant can reason over the failure shape — the same contract the
+`MCP_FAILURE` branch in the prototype exercises.

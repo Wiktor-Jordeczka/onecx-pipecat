@@ -1,0 +1,7 @@
+name: onecx-pipecat
+title: OneCX Pipecat
+version: '0.0.1'
+start_page: index.adoc
+
+nav:
+- modules/ROOT/nav.adoc

@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main, prototype]
+  pull_request:
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5"
+          enable-cache: true
+
+      - name: Sync (installs the lockfile into .venv)
+        run: uv sync --python 3.12 --frozen
+
+      - name: Lint (ruff)
+        run: uv run --python 3.12 ruff check .
+
+      - name: Format check (ruff)
+        run: uv run --python 3.12 ruff format --check .
+
+      - name: Test (pytest + pytest-asyncio, auto mode)
+        run: uv run --python 3.12 pytest -q
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Antora
+        run: npm install -g antora@3.x
+
+      - name: Build docs (antora generate)
+        run: antora generate antora-playbook.yml
+
+      - name: Smoke-check the rendered index
+        run: |
+          test -f ./build/site/index.html
+          grep -q "onecx-pipecat" ./build/site/index.html
