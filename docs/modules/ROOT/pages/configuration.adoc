@@ -34,6 +34,10 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `INFO`
 | Application log level.
 
+| `default_tenant_id`
+| `local`
+| Tenant identifier used when a request does not carry one.
+
 | `auth.issuer`
 | `https://auth.example`
 | Expected JWT issuer for `InMemoryAuthAdapter`-compatible tokens.
@@ -41,6 +45,10 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `auth.audience`
 | `onecx-pipecat`
 | Expected JWT audience.
+
+| `auth.token_claim_subject`
+| `sub`
+| JWT claim name read as the authenticated subject.
 
 | `agent_config.default_agent_id`
 | `onecx-agent`
