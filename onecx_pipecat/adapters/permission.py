@@ -14,7 +14,9 @@ class PermissionAdapter(Protocol):
 
 class InMemoryPermissionAdapter:
     """Policy: any tool whose name starts with the write prefix is ALWAYS_ASK,
-    everything else ALLOW. Matches the ``ALWAYS_ASK`` flow in the prototype."""
+    everything else falls back to the configured ``default_action``. Matches
+    the ``ALWAYS_ASK`` flow in the prototype while honoring the documented
+    ``permission.default_action`` fallback."""
 
     def __init__(self, settings: PermissionSettings | None = None) -> None:
         self._settings = settings or PermissionSettings()
@@ -26,4 +28,8 @@ class InMemoryPermissionAdapter:
                 action=PermissionAction.ALWAYS_ASK,
                 reason=f"tool {proposal.tool_name!r} requires approval",
             )
-        return PermissionDecision(action=PermissionAction.ALLOW, reason="read-only tool")
+        # The configured default is the operator's documented choice for tools
+        # that match no explicit policy; it is case-insensitive (config values
+        # are lowercase, ``PermissionAction`` values are uppercase).
+        default_action = PermissionAction(self._settings.default_action.strip().upper())
+        return PermissionDecision(action=default_action, reason="default policy")

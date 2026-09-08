@@ -8,6 +8,10 @@ on:
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -18,16 +22,16 @@ jobs:
           enable-cache: true
 
       - name: Sync (installs the lockfile into .venv)
-        run: uv sync --python 3.12 --frozen
+        run: uv sync --python ${{ matrix.python-version }} --frozen
 
       - name: Lint (ruff)
-        run: uv run --python 3.12 ruff check .
+        run: uv run --python ${{ matrix.python-version }} ruff check .
 
       - name: Format check (ruff)
-        run: uv run --python 3.12 ruff format --check .
+        run: uv run --python ${{ matrix.python-version }} ruff format --check .
 
       - name: Test (pytest + pytest-asyncio, auto mode)
-        run: uv run --python 3.12 pytest -q
+        run: uv run --python ${{ matrix.python-version }} pytest -q
 
   docs:
     runs-on: ubuntu-latest

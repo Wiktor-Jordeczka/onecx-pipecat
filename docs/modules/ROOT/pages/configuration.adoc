@@ -92,6 +92,32 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 
 |===
 
+== In-memory adapter coverage
+
+The in-memory adapters are settings-light stand-ins: each one loads and
+validates its nested `Settings` model, but only some fields are read at
+runtime. This section states exactly which, so the reference above matches
+shipped behavior.
+
+* *Read by the in-memory adapters today:*
+  ** `permission.default_action` — the fallback `PermissionAction` that
+     `InMemoryPermissionAdapter` returns for tools that match no explicit
+     (write) policy.
+  ** `persistence.max_entries_per_session` — the per-session cap that
+     `InMemoryPersistence` enforces by evicting the oldest entry when a
+     session exceeds it.
+* *Loaded and validated, but not yet read by the in-memory adapters:* every
+  other field in the reference. Each documents the contract a real,
+  non-in-memory adapter honors once it is wired in — for example
+  `auth.issuer` / `auth.audience` / `auth.token_claim_subject` are the JWT
+  fields a real auth adapter validates (the in-memory auth stand-in resolves
+  tokens from a local table rather than parsing JWTs), `speech.*` the
+  speech-backend knobs, `agent_config.*` the default pin,
+  `persistence.backend` / `mcp.default_server_url` the backend selectors, and
+  `mcp.timeout_seconds` the per-invocation timeout. These fields are
+  placeholders reserved for real adapter implementations, not consumed by the
+  in-memory ones.
+
 == Precedence
 
 Explicit constructor kwargs > environment variables > the defaults

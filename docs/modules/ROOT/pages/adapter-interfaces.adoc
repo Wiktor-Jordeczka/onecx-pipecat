@@ -13,7 +13,11 @@ function in `onecx_pipecat/adapters/factory.py` at it.
 * In-memory: `InMemoryAuthAdapter`
 
 Raise `AuthenticationError` for tokens that are not in the local table.
-`seed(token, subject, tenant_id, roles)` is a test-only convenience.
+`seed(token, subject, tenant_id, roles)` is a test-only convenience. The
+in-memory stand-in resolves a token against a local table rather than parsing
+JWTs, so the `auth.issuer`, `auth.audience`, and `auth.token_claim_subject`
+settings are not read here — they are the fields a real (non-in-memory) auth
+adapter validates.
 
 == Agent Configuration
 
@@ -40,7 +44,9 @@ the TTS returns UTF-8 bytes of the input text.
   `get(session_id, entry_id) -> VoiceEntry | None`
 * In-memory: `InMemoryPersistence`
 
-Assigns a stable entry id per session and preserves order.
+Assigns a stable entry id per session and preserves order. It enforces
+`persistence.max_entries_per_session` by evicting the oldest entry when a
+session exceeds the cap.
 
 == Permission
 
@@ -48,7 +54,8 @@ Assigns a stable entry id per session and preserves order.
 * In-memory: `InMemoryPermissionAdapter`
 
 Tools whose name begins with `write_`, `delete_`, or `send_` are
-`ALWAYS_ASK`; everything else is `ALLOW`.
+`ALWAYS_ASK`; every other tool falls back to the configured
+`permission.default_action` (the default is `always_ask`).
 
 == MCP
 
@@ -57,4 +64,6 @@ Tools whose name begins with `write_`, `delete_`, or `send_` are
 
 Unknown tools return a sanitized `McpToolResult(ok=False, error=...)` so
 the assistant can reason over the failure shape — the same contract the
-`MCP_FAILURE` branch in the prototype exercises.
+`MCP_FAILURE` branch in the prototype exercises. The in-memory stand-in
+does not enforce `mcp.timeout_seconds` around a handler; that is the
+per-invocation timeout a real (non-in-memory) MCP adapter applies.

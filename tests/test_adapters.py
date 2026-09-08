@@ -11,6 +11,7 @@ from onecx_pipecat.adapters import (
 )
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.mcp import McpToolResult
+from onecx_pipecat.config import PermissionSettings, PersistenceSettings
 from onecx_pipecat.models import (
     PermissionAction,
     PermissionDecisionStatus,
@@ -73,6 +74,58 @@ async def test_permission_write_tool_always_asks():
     )
     decision = await perm.evaluate(proposal)
     assert decision.action is PermissionAction.ALWAYS_ASK
+
+
+async def test_permission_default_action_applies_to_non_write_tool():
+    """A non-write-prefixed tool falls back to the configured default_action.
+
+    Default is always_ask (the documented default), so an unset default still
+    asks. This pins the field as load-bearing regardless of the default value.
+    """
+    perm = InMemoryPermissionAdapter()
+    proposal = ToolProposal(proposal_id="p1", tool_name="read_record")
+    decision = await perm.evaluate(proposal)
+    assert decision.action is PermissionAction.ALWAYS_ASK
+
+
+async def test_permission_default_deny_denies_non_write_tool():
+    """`permission.default_action=deny` makes a non-write tool DENY."""
+    perm = InMemoryPermissionAdapter(PermissionSettings(default_action="deny"))
+    proposal = ToolProposal(proposal_id="p1", tool_name="read_record")
+    decision = await perm.evaluate(proposal)
+    assert decision.action is PermissionAction.DENY
+
+
+async def test_permission_write_tool_still_always_asks_under_default_deny():
+    """Write-prefixed tools stay ALWAYS_ASK even when the default is deny."""
+    perm = InMemoryPermissionAdapter(PermissionSettings(default_action="deny"))
+    proposal = ToolProposal(proposal_id="p1", tool_name="write_record")
+    decision = await perm.evaluate(proposal)
+    assert decision.action is PermissionAction.ALWAYS_ASK
+
+
+async def test_persistence_evicts_oldest_entry_when_cap_exceeded():
+    store = InMemoryPersistence(PersistenceSettings(max_entries_per_session=3))
+    for i in range(5):
+        entry = VoiceEntry(
+            kind=VoiceEntryKind.HUMAN,
+            text=f"m{i}",
+            idempotency_key=f"k{i}",
+        )
+        await store.append("s1", entry)
+    entries = await store.list_entries("s1")
+    assert len(entries) == 3
+    # The oldest two entries (m0, m1) are evicted; the newest three remain.
+    assert [e.text for e in entries] == ["m2", "m3", "m4"]
+
+
+async def test_persistence_eviction_is_per_session():
+    store = InMemoryPersistence(PersistenceSettings(max_entries_per_session=2))
+    for i in range(3):
+        await store.append("s1", VoiceEntry(kind=VoiceEntryKind.HUMAN, text=f"a{i}"))
+    await store.append("s2", VoiceEntry(kind=VoiceEntryKind.HUMAN, text="s2-0"))
+    assert [e.text for e in await store.list_entries("s1")] == ["a1", "a2"]
+    assert [e.text for e in await store.list_entries("s2")] == ["s2-0"]
 
 
 async def test_mcp_unknown_tool_is_sanitized_failure():
