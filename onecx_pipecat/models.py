@@ -28,7 +28,7 @@ class AgentConfigSnapshot(BaseModel):
     version: int
     system_prompt: str = ""
     tool_names: list[str] = Field(default_factory=list)
-    tools: list["AgentToolSnapshot"] = Field(default_factory=list)
+    tools: list[AgentToolSnapshot] = Field(default_factory=list)
 
 
 class AgentToolSnapshot(BaseModel):
@@ -39,8 +39,8 @@ class AgentToolSnapshot(BaseModel):
     tool_description: str = ""
     server_name: str = "inmemory"
     server_url: str = "inmemory"
-    execution_policy: "ExecutionPolicy" = "ALWAYS_ASK"
-    allowed: "PermissionAction | None" = None
+    execution_policy: ExecutionPolicy = "ALWAYS_ASK"
+    allowed: PermissionAction | None = None
 
 
 class VoiceEntryKind(StrEnum):

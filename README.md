@@ -12,6 +12,14 @@ uv run --python 3.12 pytest -q
 uv run --python 3.12 uvicorn onecx_pipecat.main:app --port 8080
 ```
 
+## Linting and pre-commit
+
+```bash
+uv run --python 3.11 ruff check .
+chmod +x .githooks/pre-commit
+git config core.hooksPath .githooks
+```
+
 ## Documentation
 
 Antora module under `docs/` (component descriptor `docs/antora.yml`, site
