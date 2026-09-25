@@ -11,7 +11,7 @@ from onecx_pipecat.adapters import (
 )
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.mcp import McpToolResult
-from onecx_pipecat.config import PermissionSettings, PersistenceSettings
+from onecx_pipecat.config import McpSettings, PermissionSettings, PersistenceSettings
 from onecx_pipecat.models import (
     ExecutionPolicy,
     PermissionAction,
@@ -188,3 +188,44 @@ async def test_mcp_invoke_with_only_proposal_uses_arguments():
     result = await mcp.invoke(proposal)  # args defaults to None
     assert result.ok is True
     assert result.value == {"echo": {"x": 1, "y": "test"}}
+
+
+async def test_mcp_supports_multiple_servers():
+    mcp = InMemoryMcpAdapter(
+        McpSettings(
+            default_server_name="alpha",
+            servers={"alpha": "inmemory://alpha", "beta": "inmemory://beta"},
+        )
+    )
+
+    async def alpha_echo(args):
+        return {"server": "alpha", "echo": args}
+
+    async def beta_echo(args):
+        return {"server": "beta", "echo": args}
+
+    mcp.register("echo", alpha_echo, server_name="alpha")
+    mcp.register("echo", beta_echo, server_name="beta")
+
+    default_result = await mcp.invoke(ToolProposal(proposal_id="p1", tool_name="echo"), {"x": 1})
+    beta_result = await mcp.invoke(
+        ToolProposal(proposal_id="p2", tool_name="echo", server_name="beta"),
+        {"x": 2},
+    )
+
+    assert default_result.ok is True
+    assert default_result.value == {"server": "alpha", "echo": {"x": 1}}
+    assert beta_result.ok is True
+    assert beta_result.value == {"server": "beta", "echo": {"x": 2}}
+
+
+async def test_mcp_unknown_server_is_sanitized_failure():
+    mcp = InMemoryMcpAdapter(
+        McpSettings(default_server_name="alpha", servers={"alpha": "inmemory://alpha"})
+    )
+    result = await mcp.invoke(
+        ToolProposal(proposal_id="p1", tool_name="echo", server_name="beta"),
+        {"x": 1},
+    )
+    assert result.ok is False
+    assert "unknown MCP server" in result.error

@@ -8,6 +8,8 @@ def test_defaults_are_typed_and_usable():
     assert s.auth.audience == "onecx-pipecat"
     assert s.speech.sample_rate_hz == 16000
     assert s.permission.default_action == "always_ask"
+    assert s.mcp.default_server_name == "inmemory"
+    assert s.mcp.servers == {"inmemory": "inmemory"}
     assert s.mcp.timeout_seconds == 30.0
 
 

@@ -88,6 +88,7 @@ class ToolProposal(BaseModel):
 
     proposal_id: str
     tool_name: str
+    server_name: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     status: PermissionDecisionStatus = PermissionDecisionStatus.PENDING
     reason: str = ""

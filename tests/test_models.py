@@ -25,6 +25,7 @@ def test_voice_entry_hidden_default_false():
 def test_tool_proposal_defaults_to_pending():
     t = ToolProposal(proposal_id="p1", tool_name="weather.get")
     assert t.status is PermissionDecisionStatus.PENDING
+    assert t.server_name is None
     assert t.arguments == {}
 
 

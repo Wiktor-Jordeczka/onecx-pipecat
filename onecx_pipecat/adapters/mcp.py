@@ -33,17 +33,27 @@ class InMemoryMcpAdapter:
 
     def __init__(self, settings: McpSettings | None = None) -> None:
         self._settings = settings or McpSettings()
-        self._handlers: dict[str, Any] = {}
+        self._handlers_by_server: dict[str, dict[str, Any]] = {}
 
-    def register(self, tool_name: str, handler: Any) -> None:
-        self._handlers[tool_name] = handler
+    def register(self, tool_name: str, handler: Any, server_name: str | None = None) -> None:
+        target_server = server_name or self._settings.default_server_name
+        if target_server not in self._settings.servers:
+            raise ValueError(f"unknown MCP server {target_server!r}")
+        self._handlers_by_server.setdefault(target_server, {})[tool_name] = handler
 
     async def invoke(
         self, proposal: ToolProposal, args: dict[str, Any] | None = None
     ) -> McpToolResult:
-        handler = self._handlers.get(proposal.tool_name)
+        target_server = proposal.server_name or self._settings.default_server_name
+        if target_server not in self._settings.servers:
+            return McpToolResult(ok=False, error=f"unknown MCP server {target_server!r}")
+
+        handler = self._handlers_by_server.get(target_server, {}).get(proposal.tool_name)
         if handler is None:
-            return McpToolResult(ok=False, error=f"unknown tool {proposal.tool_name!r}")
+            return McpToolResult(
+                ok=False,
+                error=f"unknown tool {proposal.tool_name!r} on server {target_server!r}",
+            )
         try:
             value = await handler(dict(args if args is not None else proposal.arguments))
         except Exception as exc:  # noqa: BLE001 - sanitized boundary

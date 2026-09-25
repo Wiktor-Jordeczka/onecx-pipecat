@@ -51,7 +51,8 @@ class PermissionSettings(BaseSettings):
 class McpSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_MCP__")
 
-    default_server_url: str = "inmemory"
+    default_server_name: str = "inmemory"
+    servers: dict[str, str] = Field(default_factory=lambda: {"inmemory": "inmemory"})
     timeout_seconds: float = 30.0
 
 
