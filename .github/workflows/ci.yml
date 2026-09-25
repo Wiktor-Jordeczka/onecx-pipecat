@@ -34,7 +34,7 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} pytest -q
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: Linux
     steps:
       - uses: actions/checkout@v4
 
