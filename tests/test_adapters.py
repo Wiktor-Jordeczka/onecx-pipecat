@@ -13,6 +13,7 @@ from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.mcp import McpToolResult
 from onecx_pipecat.config import PermissionSettings, PersistenceSettings
 from onecx_pipecat.models import (
+    ExecutionPolicy,
     PermissionAction,
     PermissionDecisionStatus,
     ToolProposal,
@@ -64,44 +65,61 @@ async def test_persistence_round_trip():
     assert fetched is not None and fetched.text == "hi"
 
 
-async def test_permission_write_tool_always_asks():
+async def test_permission_exact_rule_wins():
     perm = InMemoryPermissionAdapter()
+    perm.set_rule("send_email", PermissionAction.ALWAYS_ASK)
     proposal = ToolProposal(
         proposal_id="p1",
-        tool_name="write_record",
-        arguments={"id": "1"},
+        tool_name="send_email",
+        arguments={"to": "a@b.c"},
         status=PermissionDecisionStatus.PENDING,
     )
     decision = await perm.evaluate(proposal)
     assert decision.action is PermissionAction.ALWAYS_ASK
+    assert decision.reason == "agent tool rule"
 
 
-async def test_permission_default_action_applies_to_non_write_tool():
-    """A non-write-prefixed tool falls back to the configured default_action.
-
-    Default is always_ask (the documented default), so an unset default still
-    asks. This pins the field as load-bearing regardless of the default value.
-    """
+async def test_permission_exact_rule_can_deny_or_allow():
     perm = InMemoryPermissionAdapter()
-    proposal = ToolProposal(proposal_id="p1", tool_name="read_record")
-    decision = await perm.evaluate(proposal)
+    perm.set_rule("drop_table", PermissionAction.DENY)
+    perm.set_rule("list_items", PermissionAction.ALLOW)
+    assert (await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="drop_table"))).action is (
+        PermissionAction.DENY
+    )
+    assert (await perm.evaluate(ToolProposal(proposal_id="p2", tool_name="list_items"))).action is (
+        PermissionAction.ALLOW
+    )
+
+
+async def test_permission_falls_back_to_server_default_ask():
+    perm = InMemoryPermissionAdapter()
+    perm.set_server_default(ExecutionPolicy.ALWAYS_ASK)
+    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
     assert decision.action is PermissionAction.ALWAYS_ASK
+    assert decision.reason == "server default policy"
 
 
-async def test_permission_default_deny_denies_non_write_tool():
-    """`permission.default_action=deny` makes a non-write tool DENY."""
+async def test_permission_server_default_never_ask_maps_to_allow():
+    """Legacy ``NEVER_ASK`` server default means auto-allow."""
+    perm = InMemoryPermissionAdapter()
+    perm.set_server_default(ExecutionPolicy.NEVER_ASK)
+    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
+    assert decision.action is PermissionAction.ALLOW
+
+
+async def test_permission_global_default_applies_without_rule_or_server_default():
+    """With no rule and no server default, the configured global default applies."""
+    perm = InMemoryPermissionAdapter()
+    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
+    assert decision.action is PermissionAction.ALWAYS_ASK
+    assert decision.reason == "global default policy"
+
+
+async def test_permission_global_default_deny_denies_unruled_tool():
+    """`permission.default_action=deny` denies a tool with no rule/server default."""
     perm = InMemoryPermissionAdapter(PermissionSettings(default_action="deny"))
-    proposal = ToolProposal(proposal_id="p1", tool_name="read_record")
-    decision = await perm.evaluate(proposal)
+    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
     assert decision.action is PermissionAction.DENY
-
-
-async def test_permission_write_tool_still_always_asks_under_default_deny():
-    """Write-prefixed tools stay ALWAYS_ASK even when the default is deny."""
-    perm = InMemoryPermissionAdapter(PermissionSettings(default_action="deny"))
-    proposal = ToolProposal(proposal_id="p1", tool_name="write_record")
-    decision = await perm.evaluate(proposal)
-    assert decision.action is PermissionAction.ALWAYS_ASK
 
 
 async def test_persistence_evicts_oldest_entry_when_cap_exceeded():
@@ -146,3 +164,27 @@ async def test_mcp_registered_tool_succeeds():
     result = await mcp.invoke(ToolProposal(proposal_id="p1", tool_name="echo"), {"x": 1})
     assert result.ok is True
     assert result.value == {"echo": {"x": 1}}
+
+
+async def test_mcp_invoke_with_only_proposal_uses_arguments():
+    """Regression test: omitting args parameter should use proposal.arguments.
+
+    When a caller omits the args parameter (using the default None),
+    the adapter should fall back to proposal.arguments instead of
+    silently losing the tool's payload.
+    """
+    mcp = InMemoryMcpAdapter()
+
+    async def echo(args):
+        return {"echo": args}
+
+    mcp.register("echo", echo)
+    # Invoke with only proposal, no args parameter
+    proposal = ToolProposal(
+        proposal_id="p1",
+        tool_name="echo",
+        arguments={"x": 1, "y": "test"},
+    )
+    result = await mcp.invoke(proposal)  # args defaults to None
+    assert result.ok is True
+    assert result.value == {"echo": {"x": 1, "y": "test"}}

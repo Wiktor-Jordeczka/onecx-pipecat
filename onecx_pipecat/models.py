@@ -61,6 +61,21 @@ class PermissionDecision(BaseModel):
     reason: str = ""
 
 
+class ExecutionPolicy(StrEnum):
+    """Server-level default policy for a tool connection (provider-svc ``ExecutionPolicy``)."""
+
+    ALWAYS_ASK = "ALWAYS_ASK"
+    NEVER_ASK = "NEVER_ASK"
+
+
+class AgentMcpToolRule(BaseModel):
+    """A per-agent rule for one discovered tool (provider-svc ``AgentMcpToolRule``)."""
+
+    tool_name: str
+    allowed: PermissionAction
+    tool_description: str = ""
+
+
 class PermissionDecisionStatus(StrEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"

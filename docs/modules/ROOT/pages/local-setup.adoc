@@ -37,6 +37,9 @@ curl -s http://127.0.0.1:8080/healthz
 Expect a JSON body with `"status": "OK"`, the app name, the `pipecat`
 version, and the seven adapter implementations.
 
+The authenticated voice WebSocket is served at `/ws/voice`; see
+xref:voice-session.adoc[] for its command and event contract.
+
 == Test
 
 [source,shell]

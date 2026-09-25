@@ -53,9 +53,19 @@ session exceeds the cap.
 * Protocol: `PermissionAdapter.evaluate(proposal) -> PermissionDecision`
 * In-memory: `InMemoryPermissionAdapter`
 
-Tools whose name begins with `write_`, `delete_`, or `send_` are
-`ALWAYS_ASK`; every other tool falls back to the configured
-`permission.default_action` (the default is `always_ask`).
+Policy is data, not a name heuristic. The adapter resolves a decision in the
+same order provider-svc intends:
+
+. An exact per-agent rule for the tool (`AgentMcpToolRule.allowed`, one of
+`ALLOW`, `DENY`, `ALWAYS_ASK`).
+. The tool connection's server default (`ExecutionPolicy`); legacy `NEVER_ASK`
+maps to `ALLOW`, `ALWAYS_ASK` stays `ALWAYS_ASK`.
+. The operator's global `permission.default_action` (the default is
+`always_ask`).
+
+The in-memory stand-in accepts rules through `set_rule(tool_name, allowed)` and
+a server default through `set_server_default(policy)`; a real adapter reads both
+from the pinned Agent Configuration snapshot.
 
 == MCP
 

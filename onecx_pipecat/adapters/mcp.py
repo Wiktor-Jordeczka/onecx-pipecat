@@ -45,7 +45,7 @@ class InMemoryMcpAdapter:
         if handler is None:
             return McpToolResult(ok=False, error=f"unknown tool {proposal.tool_name!r}")
         try:
-            value = await handler(dict(args or {}))
+            value = await handler(dict(args if args is not None else proposal.arguments))
         except Exception as exc:  # noqa: BLE001 - sanitized boundary
             return McpToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
         return McpToolResult(ok=True, value=value)
