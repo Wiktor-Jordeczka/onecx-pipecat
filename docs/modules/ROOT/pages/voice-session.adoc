@@ -1,0 +1,66 @@
+= Voice session
+
+The application exposes an authenticated WebSocket voice endpoint at
+`/ws/voice`. The session logic is transport-neutral: a `VoiceSession` consumes
+typed commands and returns typed events, so the WebSocket carrier can later be
+replaced (for example with WebRTC) without changing session behavior.
+
+== Authentication
+
+Connect with a token as a query parameter:
+
+----
+ws://127.0.0.1:8080/ws/voice?token=<token>
+----
+
+The token is resolved through the authentication adapter. An unknown or missing
+token closes the connection with code `1008` before it is accepted.
+
+== Commands
+
+Commands are JSON objects with a `type` field, sent by the client.
+
+[cols="1,3",options="header"]
+|===
+| `type` | Payload
+
+| `start_session`
+| `agent_id` (string) — pins the agent configuration snapshot and moves the
+session to the listening state.
+
+| `audio`
+| `audio` (base64 string) — a finalized chunk of captured microphone audio.
+
+| `stop`
+| none — ends the session and returns to typed chat.
+|===
+
+== Events
+
+Events are JSON objects with a `kind` field, emitted by the session.
+
+[cols="1,3",options="header"]
+|===
+| `kind` | Meaning
+
+| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `agent_version`.
+| `transcript` | Finalized speech recognition; carries `text` and `state`.
+| `assistant_text` | Assistant caption; carries `text` and `status`.
+| `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`COMPLETE` or `FAILED`).
+| `turn_complete` | The turn finished; carries the persisted assistant `entry_id`.
+| `error` | A typed failure; carries `code` and `message`.
+| `session_closed` | The session ended; carries a `reason`.
+|===
+
+== Behavior
+
+* Starting a session without valid configuration fails closed with an
+`error` of code `config_unavailable`; the session stays unstarted.
+* Audio before `start_session`, or a second `start_session`, is rejected with an
+`error` of code `illegal_state`.
+* Only finalized transcripts are persisted. Empty, noise-only input stays
+ephemeral and emits no events.
+* A completed turn persists one human entry and one assistant entry through the
+persistence adapter.
+* Speech synthesis failure keeps the assistant text and emits `assistant_audio`
+with `state` `FAILED`, so the answer is never discarded.

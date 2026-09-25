@@ -1,0 +1,10 @@
+= OneCX Pipecat
+
+The `onecx-pipecat` application provides the foundation for authenticated
+voice sessions built on top of https://pipecat.ai[Pipecat]. Its design
+principle is that every external dependency (authentication, agent
+configuration, speech, persistence, permission, MCP) is a replaceable
+adapter, so the foundation can be exercised locally and in CI without any
+cloud credentials.
+
+Start with xref:local-setup.adoc[Local setup].

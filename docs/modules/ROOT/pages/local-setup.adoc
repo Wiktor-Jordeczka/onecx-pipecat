@@ -1,0 +1,50 @@
+= Local setup
+
+== Prerequisites
+
+* Python 3.11 or newer.
+* https://docs.astral.sh/uv/[uv] on your `PATH`.
+* `git`.
+
+== Install
+
+Clone the repository and install the project:
+
+[source,shell]
+----
+git clone https://github.com/onecx/onecx-pipecat.git
+cd onecx-pipecat
+uv sync --python 3.12
+----
+
+`uv sync` installs the pinned dependencies from `uv.lock` into a
+project-local `.venv/`.
+
+== Run
+
+[source,shell]
+----
+uv run --python 3.12 uvicorn onecx_pipecat.main:app --port 8080
+----
+
+Confirm the health path:
+
+[source,shell]
+----
+curl -s http://127.0.0.1:8080/healthz
+----
+
+Expect a JSON body with `"status": "OK"`, the app name, the `pipecat`
+version, and the seven adapter implementations.
+
+The authenticated voice WebSocket is served at `/ws/voice`; see
+xref:voice-session.adoc[] for its command and event contract.
+
+== Test
+
+[source,shell]
+----
+uv run --python 3.12 pytest -q
+----
+
+The test suite is async by design and runs with no network access.

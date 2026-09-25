@@ -1,0 +1,124 @@
+= Configuration
+
+Configuration is loaded by `onecx_pipecat.config.Settings`, a
+`pydantic-settings` model with the environment prefix `ONECX_`.
+Nested fields use `__` as the delimiter, so:
+
+[source,shell]
+----
+ONECX_PORT=9000
+ONECX_AUTH__ISSUER=https://issuer.example
+ONECX_SPEECH__STT_PROVIDER=aws
+ONECX_PERMISSION__DEFAULT_ACTION=deny
+----
+
+== Reference
+
+[cols="25,20,55",options="header"]
+|===
+| Field | Default | Description
+
+| `app_name`
+| `onecx-pipecat`
+| Display name of the application.
+
+| `host`
+| `127.0.0.1`
+| Bind address for the HTTP server.
+
+| `port`
+| `8080`
+| Port for the HTTP server.
+
+| `log_level`
+| `INFO`
+| Application log level.
+
+| `default_tenant_id`
+| `local`
+| Tenant identifier used when a request does not carry one.
+
+| `auth.issuer`
+| `https://auth.example`
+| Expected JWT issuer for `InMemoryAuthAdapter`-compatible tokens.
+
+| `auth.audience`
+| `onecx-pipecat`
+| Expected JWT audience.
+
+| `auth.token_claim_subject`
+| `sub`
+| JWT claim name read as the authenticated subject.
+
+| `agent_config.default_agent_id`
+| `onecx-agent`
+| Default agent to pin when no override is present.
+
+| `agent_config.default_snapshot_version`
+| `1`
+| Default snapshot version to pin.
+
+| `speech.stt_provider`
+| `inmemory`
+| STT provider identifier.
+
+| `speech.tts_provider`
+| `inmemory`
+| TTS provider identifier.
+
+| `speech.sample_rate_hz`
+| `16000`
+| Expected audio sample rate in hertz.
+
+| `persistence.backend`
+| `inmemory`
+| Persistence backend identifier.
+
+| `persistence.max_entries_per_session`
+| `512`
+| Soft cap on entries kept per session.
+
+| `permission.default_action`
+| `always_ask`
+| Default `PermissionAction` for tools that do not match a policy.
+
+| `mcp.default_server_url`
+| `inmemory`
+| MCP server identifier (in-memory by default).
+
+| `mcp.timeout_seconds`
+| `30.0`
+| Per-invocation MCP timeout.
+
+|===
+
+== In-memory adapter coverage
+
+The in-memory adapters are settings-light stand-ins: each one loads and
+validates its nested `Settings` model, but only some fields are read at
+runtime. This section states exactly which, so the reference above matches
+shipped behavior.
+
+* *Read by the in-memory adapters today:*
+  ** `permission.default_action` — the fallback `PermissionAction` that
+     `InMemoryPermissionAdapter` returns for tools that match no explicit
+     (write) policy.
+  ** `persistence.max_entries_per_session` — the per-session cap that
+     `InMemoryPersistence` enforces by evicting the oldest entry when a
+     session exceeds it.
+* *Loaded and validated, but not yet read by the in-memory adapters:* every
+  other field in the reference. Each documents the contract a real,
+  non-in-memory adapter honors once it is wired in — for example
+  `auth.issuer` / `auth.audience` / `auth.token_claim_subject` are the JWT
+  fields a real auth adapter validates (the in-memory auth stand-in resolves
+  tokens from a local table rather than parsing JWTs), `speech.*` the
+  speech-backend knobs, `agent_config.*` the default pin,
+  `persistence.backend` / `mcp.default_server_url` the backend selectors, and
+  `mcp.timeout_seconds` the per-invocation timeout. These fields are
+  placeholders reserved for real adapter implementations, not consumed by the
+  in-memory ones.
+
+== Precedence
+
+Explicit constructor kwargs > environment variables > the defaults
+declared on the model. `pydantic-settings` handles this precedence for you.
