@@ -13,6 +13,7 @@ from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.mcp import McpToolResult
 from onecx_pipecat.config import McpSettings, PermissionSettings, PersistenceSettings
 from onecx_pipecat.models import (
+    AgentToolSnapshot,
     ExecutionPolicy,
     PermissionAction,
     PermissionDecisionStatus,
@@ -44,6 +45,34 @@ async def test_agent_config_pins_highest_version():
     snap = await cfg.pin("acme", "a")
     assert snap.version == 2
     assert snap.system_prompt == "v2"
+
+
+async def test_agent_config_snapshot_can_carry_tools_and_policy_hints():
+    cfg = InMemoryAgentConfigAdapter()
+    cfg.register(
+        "acme",
+        "a",
+        version=1,
+        tools=[
+            AgentToolSnapshot(
+                tool_id="tool-1",
+                tool_name="w.get",
+                tool_description="Weather read",
+                server_name="weather",
+                server_url="https://weather.example/mcp",
+                execution_policy=ExecutionPolicy.ALWAYS_ASK,
+                allowed=PermissionAction.ALWAYS_ASK,
+            )
+        ],
+    )
+
+    snap = await cfg.pin("acme", "a")
+    assert snap.tools[0].tool_id == "tool-1"
+    assert snap.tools[0].tool_name == "w.get"
+    assert snap.tools[0].server_name == "weather"
+    assert snap.tools[0].allowed is PermissionAction.ALWAYS_ASK
+    # tool_names remains available for older call paths.
+    assert snap.tool_names == ["w.get"]
 
 
 async def test_stt_tts_are_deterministic():

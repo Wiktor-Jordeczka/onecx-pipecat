@@ -1,5 +1,7 @@
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
+    AgentToolSnapshot,
+    ExecutionPolicy,
     PermissionAction,
     PermissionDecision,
     PermissionDecisionStatus,
@@ -36,6 +38,18 @@ def test_permission_decision_carries_action():
 
 
 def test_agent_config_snapshot_is_pinned():
-    s = AgentConfigSnapshot(agent_id="a", version=3, tool_names=["w.get"])
+    s = AgentConfigSnapshot(
+        agent_id="a",
+        version=3,
+        tool_names=["w.get"],
+        tools=[
+            AgentToolSnapshot(
+                tool_id="tool-1",
+                tool_name="w.get",
+                execution_policy=ExecutionPolicy.ALWAYS_ASK,
+            )
+        ],
+    )
     assert s.version == 3
     assert s.tool_names == ["w.get"]
+    assert s.tools[0].tool_name == "w.get"
