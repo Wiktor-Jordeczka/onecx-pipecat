@@ -2,10 +2,14 @@
 
 The application composes a set of replaceable adapters. Each capability is a
 `typing.Protocol` in `onecx_pipecat/adapters/` and ships with an in-memory
-implementation that is safe to construct with zero cloud credentials. Swapping
-a capability means writing a new class that satisfies the same `Protocol` and
-pointing the corresponding factory function in
-`onecx_pipecat/adapters/factory.py` at it.
+implementation that is safe to construct with zero cloud credentials. Where a
+capability also ships a real implementation (agent configuration, chat access,
+MCP discovery), the factory in `onecx_pipecat/adapters/factory.py` selects it
+through that capability's `backend` setting (`inmemory` by default, `http` to
+use the real adapter) — so a deployment switches to a real adapter with a
+configuration change, not a code change. Swapping a capability for an adapter
+that does not yet ship means writing a new class that satisfies the same
+`Protocol` and pointing the corresponding factory function at it.
 
 == Authentication
 
@@ -36,6 +40,13 @@ bare list of JWKs, or a single JWK. `authenticate` decodes the token with
 RS256, checking signature, `issuer`, and `audience`; `is_expired` decodes
 without re-verifying expiry and reports whether `exp` is in the past.
 A real deployment points `auth.jwks` at the Keycloak JWKS URL.
+
+The key used for a token is chosen by the token's `kid` header, so a JWKS that
+carries several keys (a rotated set) is used correctly: `authenticate` reads
+the unverified `kid` and verifies against the matching key. A token whose `kid`
+matches no configured key is rejected (rather than silently verified against
+the first key), and a token with no `kid` falls back to the first key in the
+set.
 
 == Agent Configuration
 

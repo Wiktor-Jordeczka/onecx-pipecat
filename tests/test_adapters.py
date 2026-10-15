@@ -419,6 +419,116 @@ async def test_jwt_auth_rejects_expired_token():
     assert auth.is_expired(token) is True
 
 
+def _rsa_jwk(kid: str):
+    """A throwaway RS256 keypair and its JWK document entry (test-only)."""
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pub = key.public_key().public_numbers()
+    n = pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")
+    e = pub.e.to_bytes(pub.e.bit_length(), "big")
+    jwk = {
+        "kty": "RSA",
+        "use": "sig",
+        "alg": "RS256",
+        "kid": kid,
+        "n": jwt.utils.base64url_encode(n).decode(),
+        "e": jwt.utils.base64url_encode(e).decode(),
+    }
+    return key, jwk
+
+
+def _signed_token_with_kid(key, *, kid, issuer, audience, subject, exp):
+    import jwt
+
+    return jwt.encode(
+        {"sub": subject, "tenant_id": "acme", "iss": issuer, "aud": audience, "exp": exp},
+        key,
+        algorithm="RS256",
+        headers={"kid": kid},
+    )
+
+
+async def test_jwt_auth_matches_key_by_kid_across_rotation():
+    # A JWKS holding several rotated keys: a token signed by the second key
+    # must verify, which only works if the key is chosen by the token's kid
+    # rather than always taking the first key in the set.
+    from onecx_pipecat.adapters.auth import JwtAuthAdapter
+    from onecx_pipecat.config import AuthSettings
+
+    first_key, first_jwk = _rsa_jwk("key-v1")
+    second_key, second_jwk = _rsa_jwk("key-v2")
+    jwks = {"keys": [first_jwk, second_jwk]}
+    settings = AuthSettings(issuer="https://issuer.example", audience="onecx-pipecat")
+    auth = JwtAuthAdapter(settings)
+    auth.set_jwks(jwks)
+
+    second_token = _signed_token_with_kid(
+        second_key,
+        kid="key-v2",
+        issuer=settings.issuer,
+        audience=settings.audience,
+        subject="user-2",
+        exp=10_000_000_000,
+    )
+    p = await auth.authenticate(second_token)
+    assert p.subject == "user-2"
+    assert auth.is_expired(second_token) is False
+
+    first_token = _signed_token_with_kid(
+        first_key,
+        kid="key-v1",
+        issuer=settings.issuer,
+        audience=settings.audience,
+        subject="user-1",
+        exp=10_000_000_000,
+    )
+    assert (await auth.authenticate(first_token)).subject == "user-1"
+
+
+async def test_jwt_auth_rejects_token_with_unknown_kid():
+    from onecx_pipecat.adapters.auth import JwtAuthAdapter
+    from onecx_pipecat.config import AuthSettings
+
+    key, jwk = _rsa_jwk("key-v1")
+    settings = AuthSettings(issuer="https://issuer.example", audience="onecx-pipecat")
+    auth = JwtAuthAdapter(settings)
+    auth.set_jwks({"keys": [jwk]})
+    # A token whose kid is not in the JWKS must be rejected rather than tried
+    # against the wrong (first) key.
+    orphan = _signed_token_with_kid(
+        key,
+        kid="key-v9",
+        issuer=settings.issuer,
+        audience=settings.audience,
+        subject="u",
+        exp=10_000_000_000,
+    )
+    with pytest.raises(AuthenticationError):
+        await auth.authenticate(orphan)
+    assert auth.is_expired(orphan) is True
+
+
+async def test_jwt_auth_falls_back_to_first_key_without_kid():
+    from onecx_pipecat.adapters.auth import JwtAuthAdapter
+    from onecx_pipecat.config import AuthSettings
+
+    key, jwks = _rsa_jwks()
+    settings = AuthSettings(issuer="https://issuer.example", audience="onecx-pipecat")
+    auth = JwtAuthAdapter(settings)
+    auth.set_jwks(jwks)
+    # _signed_token carries no kid; the single-key set still verifies it.
+    token = _signed_token(
+        key,
+        issuer=settings.issuer,
+        audience=settings.audience,
+        subject="user-1",
+        exp=10_000_000_000,
+    )
+    assert (await auth.authenticate(token)).subject == "user-1"
+
+
 # --- agent configuration: voice gate + unlisted permission --------------
 
 

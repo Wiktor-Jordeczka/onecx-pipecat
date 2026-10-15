@@ -119,19 +119,23 @@ class JwtAuthAdapter:
 
     Validates the signature (RS256), issuer, audience and ``exp`` exactly the
     way ``onecx-permission-svc`` does, using the configured issuer and key set.
-    Keys come from ``settings.jwks`` (an embedded JWKS JSON document). This
-    class is only constructed by explicit wiring; the default factory uses the
-    in-memory stand-in so local runs need no Keycloak access.
+    Keys come from ``settings.jwks`` (an embedded JWKS JSON document). The
+    token's ``kid`` header selects which JWKS key verifies it, so a rotated
+    multi-key set is used correctly instead of always trying the first key.
+    This class is only constructed by explicit wiring; the default factory
+    uses the in-memory stand-in so local runs need no Keycloak access.
     """
 
     def __init__(self, settings: AuthSettings | None = None) -> None:
         self._settings = settings or AuthSettings()
         self._keys: list[dict] | None = None
+        self._keys_by_kid: dict[str, object] | None = None
         if self._settings.jwks:
             self._keys = self._normalize(self._settings.jwks)
 
     def set_jwks(self, jwks: object) -> None:
         self._keys = self._normalize(jwks)
+        self._keys_by_kid = None
 
     @staticmethod
     def _normalize(jwks: object) -> list[dict]:
@@ -158,14 +162,42 @@ class JwtAuthAdapter:
             roles = []
         return Principal(subject=subject, tenant_id=str(tenant), roles=[str(r) for r in roles])
 
-    def _key(self) -> object:
-        """The first usable public key from the configured JWKS, or None."""
+    def _key_for_kid(self, kid: str | None) -> object:
+        """The public key matching the token's ``kid`` header, or None.
+
+        A JWKS routinely carries several keys (rotation); the token selects the
+        one that signed it via the ``kid`` in its header. A token with no ``kid``
+        falls back to the first key, and an unknown ``kid`` resolves to ``None``
+        so the token is rejected instead of trying the wrong key.
+        """
         if not self._keys:
             return None
-        try:
-            from jwt import PyJWKSet
+        if kid is None:
+            return self._first_key()
+        if self._keys_by_kid is None:
+            self._keys_by_kid = {
+                k.get("kid"): k for k in self._keys if isinstance(k.get("kid"), str)
+            }
+        candidate = self._keys_by_kid.get(kid)
+        if candidate is None:
+            return None
+        return self._build_key(candidate)
 
-            return next(iter(PyJWKSet(self._keys))).key
+    def _first_key(self) -> object:
+        """The first usable key (used only for tokens that carry no ``kid``)."""
+        for key in self._keys:
+            built = self._build_key(key)
+            if built is not None:
+                return built
+        return None
+
+    @staticmethod
+    def _build_key(key: dict) -> object:
+        """Build the public key from a single JWK dict, or None if unusable."""
+        try:
+            from jwt import PyJWK
+
+            return PyJWK.from_dict(key).key
         except Exception:  # noqa: BLE001 - no usable key configured
             return None
 
@@ -174,9 +206,13 @@ class JwtAuthAdapter:
             import jwt
         except ImportError as exc:  # pragma: no cover - guarded in tests
             raise AuthenticationError("jwt verification unavailable") from exc
-        key = self._key()
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+        except Exception:  # noqa: BLE001 - malformed header; the token is rejected below
+            kid = None
+        key = self._key_for_kid(kid)
         if key is None:
-            raise AuthenticationError("no JWKS configured")
+            raise AuthenticationError("no JWKS key matches the token")
         try:
             claims = jwt.decode(
                 token,
@@ -198,7 +234,11 @@ class JwtAuthAdapter:
             import jwt
         except ImportError:  # pragma: no cover
             return True
-        key = self._key()
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+        except Exception:  # noqa: BLE001 - malformed header; an untrusted token is lapsed
+            kid = None
+        key = self._key_for_kid(kid)
         if key is None:
             return True
         try:

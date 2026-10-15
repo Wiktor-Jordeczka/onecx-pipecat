@@ -83,9 +83,21 @@ obtain a service token for outbound calls to OneCX services.
 | Base URL of the service exposing
 `GET /v1/agents/{agent_id}/configuration`, pinned once per session.
 
+| `agent_config.backend`
+| `inmemory`
+| Which agent-configuration adapter `build_agent_config` builds: `inmemory`
+(`InMemoryAgentConfigAdapter`) or `http` (`HttpAgentConfigAdapter`). Selecting
+the real adapter is a configuration change, not a code change.
+
 | `chat.base_url`
 | `https://chat.example`
 | Base URL of onecx-chat-svc, used to load a chat by id as the user.
+
+| `chat.backend`
+| `inmemory`
+| Which chat adapter `build_chat` builds: `inmemory` (`InMemoryChatAdapter`)
+or `http` (`HttpChatAdapter`). Selecting the real adapter is a configuration
+change, not a code change.
 
 | `speech.stt_provider`
 | `inmemory`
@@ -131,6 +143,12 @@ tool discovery; a server whose `tools/list` call fails is reported through a
 | `30.0`
 | Per-invocation MCP timeout.
 
+| `mcp.backend`
+| `inmemory`
+| Which MCP adapter `build_mcp` builds: `inmemory` (`InMemoryMcpAdapter`) or
+`http` (`HttpMcpAdapter`). Selecting the real adapter is a configuration
+change, not a code change.
+
 |===
 
 == In-memory adapter coverage
@@ -162,12 +180,18 @@ shipped behavior.
   local table rather than parsing JWTs, so it does not read `auth.jwks`,
   `auth.issuer`, `auth.audience`, or `auth.token_claim_subject`.
 
+* *Read by the factory to pick an adapter implementation:*
+  ** `agent_config.backend`, `chat.backend`, and `mcp.backend` — the selectors
+     `build_agent_config`, `build_chat`, and `build_mcp` use to return the
+     in-memory stand-in or the real HTTP adapter. Setting any of them to
+     `http` is how a deployment switches a capability to its real adapter
+     without a code change.
 * *Loaded and validated, but not yet read by the shipped adapters:*
   `speech.*` (the speech-backend knobs), `agent_config.default_agent_id` and
   `agent_config.default_snapshot_version` (the default pin),
-  `persistence.backend` (the backend selector), `mcp.*` (the server
-  selectors and the per-invocation timeout), `permission.base_url` (the base
-  URL a real permission adapter would call to check the user's voice
+  `persistence.backend` (the backend selector), the `mcp.servers` selector and
+  `mcp.timeout_seconds` (the per-invocation timeout), `permission.base_url`
+  (the base URL a real permission adapter would call to check the user's voice
   permission — the in-memory permission adapter resolves that in-process), and
   the `auth.client_id` / `auth.client_secret` / `auth.token_endpoint` OIDC
   knobs (used only when a real auth adapter must obtain its own service token).

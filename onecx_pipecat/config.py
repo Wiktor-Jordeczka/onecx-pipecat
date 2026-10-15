@@ -36,6 +36,10 @@ class AgentConfigSettings(BaseSettings):
     default_snapshot_version: int = 1
     # Base URL of the service exposing ``GET /v1/agents/{agent_id}/configuration``.
     base_url: str = "https://agentsvc.example"
+    # Which agent-config adapter the factory builds: "inmemory" (default) or
+    # "http" (calls the configuration endpoint). Selecting a real adapter is a
+    # configuration change, not a code change.
+    backend: str = "inmemory"
 
 
 class ChatSettings(BaseSettings):
@@ -43,6 +47,10 @@ class ChatSettings(BaseSettings):
 
     # Base URL of onecx-chat-svc, used to load a chat by id as the user.
     base_url: str = "https://chat.example"
+    # Which chat adapter the factory builds: "inmemory" (default) or "http"
+    # (calls onecx-chat-svc). Selecting a real adapter is a configuration
+    # change, not a code change.
+    backend: str = "inmemory"
 
 
 class SpeechSettings(BaseSettings):
@@ -75,6 +83,10 @@ class McpSettings(BaseSettings):
     default_server_name: str = "inmemory"
     servers: dict[str, str] = Field(default_factory=lambda: {"inmemory": "inmemory"})
     timeout_seconds: float = 30.0
+    # Which MCP adapter the factory builds: "inmemory" (default) or "http"
+    # (discovers tools over the configured HTTP servers). Selecting a real
+    # adapter is a configuration change, not a code change.
+    backend: str = "inmemory"
 
 
 class Settings(BaseSettings):
