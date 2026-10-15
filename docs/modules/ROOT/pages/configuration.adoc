@@ -70,6 +70,13 @@ obtain a service token for outbound calls to OneCX services.
 | `https://auth.example/protocol/openid-connect/token`
 | OIDC token endpoint Pipecat exchanges its client credentials against.
 
+| `auth.backend`
+| `inmemory`
+| Which auth adapter `build_auth` builds: `inmemory` (`InMemoryAuthAdapter`)
+or `jwt` (`JwtAuthAdapter`, verifies the `apm_principal_token` against
+`auth.jwks`). Selecting the real adapter is a configuration change, not a code
+change.
+
 | `agent_config.default_agent_id`
 | `onecx-agent`
 | Default agent to pin when no override is present.
@@ -181,9 +188,10 @@ shipped behavior.
   `auth.issuer`, `auth.audience`, or `auth.token_claim_subject`.
 
 * *Read by the factory to pick an adapter implementation:*
-  ** `agent_config.backend`, `chat.backend`, and `mcp.backend` — the selectors
-     `build_agent_config`, `build_chat`, and `build_mcp` use to return the
-     in-memory stand-in or the real HTTP adapter. Setting any of them to
+  ** `auth.backend`, `agent_config.backend`, `chat.backend`, and
+     `mcp.backend` — the selectors `build_auth`, `build_agent_config`,
+     `build_chat`, and `build_mcp` use to return the in-memory stand-in or the
+     real adapter. Setting `auth.backend` to `jwt` or any other backend to
      `http` is how a deployment switches a capability to its real adapter
      without a code change.
 * *Loaded and validated, but not yet read by the shipped adapters:*

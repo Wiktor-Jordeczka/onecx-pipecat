@@ -27,6 +27,10 @@ class AuthSettings(BaseSettings):
     client_id: str = "onecx-pipecat"
     client_secret: str = ""
     token_endpoint: str = "https://auth.example/protocol/openid-connect/token"
+    # Which auth adapter the factory builds: "inmemory" (default) or "jwt"
+    # (verifies ``apm-principal-token`` against the Keycloak JWKS). Selecting
+    # the real adapter is a configuration change, not a code change.
+    backend: str = "inmemory"
 
 
 class AgentConfigSettings(BaseSettings):

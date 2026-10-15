@@ -3,13 +3,14 @@
 The application composes a set of replaceable adapters. Each capability is a
 `typing.Protocol` in `onecx_pipecat/adapters/` and ships with an in-memory
 implementation that is safe to construct with zero cloud credentials. Where a
-capability also ships a real implementation (agent configuration, chat access,
-MCP discovery), the factory in `onecx_pipecat/adapters/factory.py` selects it
-through that capability's `backend` setting (`inmemory` by default, `http` to
-use the real adapter) — so a deployment switches to a real adapter with a
-configuration change, not a code change. Swapping a capability for an adapter
-that does not yet ship means writing a new class that satisfies the same
-`Protocol` and pointing the corresponding factory function at it.
+capability also ships a real implementation (authentication, agent
+configuration, chat access, MCP discovery), the factory in
+`onecx_pipecat/adapters/factory.py` selects it through that capability's
+`backend` setting (`inmemory` by default, `jwt` for the JWT auth adapter and
+`http` for the HTTP adapters) — so a deployment switches to a real adapter
+with a configuration change, not a code change. Swapping a capability for an
+adapter that does not yet ship means writing a new class that satisfies the
+same `Protocol` and pointing the corresponding factory function at it.
 
 == Authentication
 
@@ -18,6 +19,10 @@ that does not yet ship means writing a new class that satisfies the same
   `service_token() -> str`
 * In-memory: `InMemoryAuthAdapter`
 * JWT: `JwtAuthAdapter`
+
+`build_auth` selects the implementation through `auth.backend` (`inmemory` by
+default, `jwt` to verify the token against `auth.jwks`), like the other
+capabilities.
 
 The `apm_principal_token` is the OneCX token the client carries in the
 `start_session` command. `authenticate` resolves it to a `Principal`;

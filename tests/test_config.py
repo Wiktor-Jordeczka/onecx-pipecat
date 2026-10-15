@@ -18,6 +18,8 @@ def test_auth_settings_carry_keycloak_and_oidc_client():
     # Keycloak issuer + JWKS for verifying apm-principal-token.
     assert s.auth.issuer == "https://auth.example"
     assert s.auth.jwks == ""
+    # The auth backend selector defaults to the in-memory stand-in.
+    assert s.auth.backend == "inmemory"
     # Pipecat's own OIDC client credentials for outbound service calls.
     assert s.auth.client_id == "onecx-pipecat"
     assert s.auth.token_endpoint.startswith("https://")

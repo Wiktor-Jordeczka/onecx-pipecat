@@ -1,12 +1,12 @@
 """Concrete adapter construction from Settings.
 
 Every function takes Settings and returns the implementation selected by that
-capability's ``backend`` setting. Capabilities that ship an HTTP/real
-implementation (agent configuration, chat access, MCP) default to the
-in-memory stand-in and select the real adapter purely by configuration, so a
-deployment switches them without a code change. Swapping a capability for an
-adapter that does not yet exist means writing a new module and changing exactly
-one of these call sites.
+capability's ``backend`` setting. Capabilities that ship a real implementation
+(auth, agent configuration, chat access, MCP) default to the in-memory stand-in
+and select the real adapter purely by configuration, so a deployment switches
+them without a code change. Swapping a capability for an adapter that does not
+yet exist means writing a new module and changing exactly one of these call
+sites.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from onecx_pipecat.adapters.agent_config import (
     HttpAgentConfigAdapter,
     InMemoryAgentConfigAdapter,
 )
-from onecx_pipecat.adapters.auth import InMemoryAuthAdapter
+from onecx_pipecat.adapters.auth import InMemoryAuthAdapter, JwtAuthAdapter
 from onecx_pipecat.adapters.chat import HttpChatAdapter, InMemoryChatAdapter
 from onecx_pipecat.adapters.mcp import HttpMcpAdapter, InMemoryMcpAdapter
 from onecx_pipecat.adapters.permission import InMemoryPermissionAdapter
@@ -25,6 +25,8 @@ from onecx_pipecat.config import Settings
 
 
 def build_auth(settings: Settings):
+    if settings.auth.backend == "jwt":
+        return JwtAuthAdapter(settings.auth)
     return InMemoryAuthAdapter(settings.auth)
 
 

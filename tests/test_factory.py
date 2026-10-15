@@ -23,24 +23,26 @@ def test_factory_builds_inmemory_adapters_by_default():
     assert type(build_mcp(s)).__name__ == "InMemoryMcpAdapter"
 
 
-def test_factory_selects_http_adapters_by_configuration():
-    # Selecting a real (HTTP) adapter is a configuration change, not a code
-    # change: the same build_* functions return the exported Http implementations.
+def test_factory_selects_real_adapters_by_configuration():
+    # Selecting a real (HTTP/JWT) adapter is a configuration change, not a code
+    # change: the same build_* functions return the exported real implementations.
     s = Settings(
+        auth={"backend": "jwt"},
         agent_config={"backend": "http"},
         chat={"backend": "http"},
         mcp={"backend": "http"},
     )
+    assert type(build_auth(s)).__name__ == "JwtAuthAdapter"
     assert type(build_agent_config(s)).__name__ == "HttpAgentConfigAdapter"
     assert type(build_chat(s)).__name__ == "HttpChatAdapter"
     assert type(build_mcp(s)).__name__ == "HttpMcpAdapter"
-    # Capabilities with no HTTP implementation still return the in-memory one.
-    assert type(build_auth(s)).__name__ == "InMemoryAuthAdapter"
+    # Capabilities with no real implementation yet still return in-memory.
     assert type(build_permission(s)).__name__ == "InMemoryPermissionAdapter"
 
 
 def test_factory_backend_defaults_are_inmemory():
     s = Settings()
+    assert s.auth.backend == "inmemory"
     assert s.agent_config.backend == "inmemory"
     assert s.chat.backend == "inmemory"
     assert s.mcp.backend == "inmemory"
@@ -50,5 +52,7 @@ def test_factory_backend_env_override(monkeypatch):
     # The backend selector is a plain nested setting, so the environment
     # overrides it the way every other adapter knob does.
     monkeypatch.setenv("ONECX_CHAT__BACKEND", "http")
+    monkeypatch.setenv("ONECX_AUTH__BACKEND", "jwt")
     s = Settings(_env_file=None)
     assert type(build_chat(s)).__name__ == "HttpChatAdapter"
+    assert type(build_auth(s)).__name__ == "JwtAuthAdapter"

@@ -122,8 +122,9 @@ class JwtAuthAdapter:
     Keys come from ``settings.jwks`` (an embedded JWKS JSON document). The
     token's ``kid`` header selects which JWKS key verifies it, so a rotated
     multi-key set is used correctly instead of always trying the first key.
-    This class is only constructed by explicit wiring; the default factory
-    uses the in-memory stand-in so local runs need no Keycloak access.
+    The factory builds this adapter when ``auth.backend`` is ``"jwt"``; the
+    default (``"inmemory"``) uses the in-memory stand-in so local runs need
+    no Keycloak access.
     """
 
     def __init__(self, settings: AuthSettings | None = None) -> None:
