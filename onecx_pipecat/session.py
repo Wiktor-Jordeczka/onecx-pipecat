@@ -20,6 +20,7 @@ from enum import StrEnum
 from onecx_pipecat.adapters.agent_config import AgentConfigError
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.chat import Chat, ChatAccessError
+from onecx_pipecat.adapters.permission import allowed_tools
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
@@ -150,20 +151,18 @@ class VoiceSession:
             return [ErrorEvent(code="config_unavailable", message=str(exc))]
         self._snapshot = snapshot
 
-        # 5. Discover MCP tools once, propagating the principal token.
-        discovery = await self._container.mcp.discover(apm_principal_token)
+        # 5. Discover tools once on the agent's own MCP servers, propagating the token.
+        discovery = await self._container.mcp.discover(snapshot.mcp_servers, apm_principal_token)
 
-        # 6. Advertise only tools resolved to ALWAYS_ALLOW.
-        self._allowed_tools = await self._container.permission.allowed_tools(
-            snapshot, discovery.tools
-        )
+        # 6. Advertise only tools the pinned configuration resolves to ALWAYS_ALLOW.
+        self._allowed_tools = allowed_tools(snapshot, discovery.tools)
 
         self.state = SessionState.READY
         events: list[Event] = [
             SessionReady(
                 session_id=self.session_id,
                 agent_id=snapshot.agent_id,
-                agent_version=snapshot.version,
+                schema_version=snapshot.schema_version,
             )
         ]
         # 7. Report each skipped MCP server; the session continues degraded.

@@ -5,18 +5,14 @@ from fastapi.testclient import TestClient
 from fastapi.websockets import WebSocketDisconnect
 
 from onecx_pipecat.app import create_app
-from onecx_pipecat.config import Settings
 from onecx_pipecat.container import AppContainer
+from tests.fakes import fake_container
 
 _AUDIO = base64.b64encode(b"pcm").decode("ascii")
 
 
 def _container() -> AppContainer:
-    container = AppContainer(Settings())
-    container.auth.seed("t-1", subject="user-1", tenant_id="local", roles=["voice"])
-    container.chat.register("chat-1", title="general")
-    container.agent_config.register("local", "onecx-agent", 1, system_prompt="be brief")
-    return container
+    return fake_container(token="t-1")
 
 
 def _start(token: str = "t-1") -> dict:
@@ -50,7 +46,7 @@ def test_ws_voice_turn_happy_path():
         ws.send_json(_start())
         ready = ws.receive_json()
         assert ready["kind"] == "session_ready"
-        assert ready["agent_version"] == 1
+        assert ready["schema_version"] == "1"
 
         ws.send_json({"type": "audio", "audio": _AUDIO})
         assert ws.receive_json()["kind"] == "transcript"

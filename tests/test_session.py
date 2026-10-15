@@ -1,23 +1,19 @@
-from onecx_pipecat.adapters.mcp import McpDiscovery
-from onecx_pipecat.config import Settings
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
-    AgentToolSnapshot,
+    McpServerSnapshot,
     PermissionAction,
     Principal,
+    ToolRule,
     VoiceEntryKind,
 )
 from onecx_pipecat.protocol import ClientAudio, RefreshToken, StartSession, StopSession
 from onecx_pipecat.session import SessionState, VoiceSession
+from tests.fakes import FakeAgentConfig, fake_container
 
 
 def _container() -> AppContainer:
-    container = AppContainer(Settings())
-    container.auth.seed("tok-user", subject="user-1", tenant_id="local", roles=["voice"])
-    container.chat.register("chat-1", title="general")
-    container.agent_config.register("local", "onecx-agent", 1, system_prompt="be brief")
-    return container
+    return fake_container()
 
 
 def _start(**overrides) -> StartSession:
@@ -30,19 +26,18 @@ def _session(container: AppContainer) -> VoiceSession:
     return VoiceSession("sess-1", container)
 
 
-async def test_start_becomes_ready_with_pinned_version():
+async def test_start_becomes_ready_with_pinned_configuration():
     session = _session(_container())
     events = await session.dispatch(_start())
     assert session.state is SessionState.READY
     assert [e.kind for e in events] == ["session_ready"]
-    assert events[0].agent_version == 1
-    assert session.snapshot is not None and session.snapshot.version == 1
+    assert events[0].schema_version == "1"
+    assert session.snapshot is not None and session.snapshot.system_prompt == "be brief"
 
 
 async def test_start_without_configuration_fails_closed():
-    container = AppContainer(Settings())
-    container.auth.seed("tok-user", subject="user-1", tenant_id="local")
-    container.chat.register("chat-1")
+    container = _container()
+    container.agent_config = FakeAgentConfig()
     session = _session(container)
     events = await session.dispatch(_start())
     assert session.state is SessionState.CREATED
@@ -77,23 +72,12 @@ async def test_start_with_unknown_chat_fails():
 
 async def test_start_without_voice_permission_fails():
     container = _container()
-    container.permission.set_voice_permission("user-1", False)
+    container.permission.deny_voice("user-1")
     session = _session(container)
     events = await session.dispatch(_start())
     assert session.state is SessionState.CREATED
     assert events[0].kind == "error"
     assert events[0].code == "voice_not_permitted"
-
-
-async def test_start_with_voice_disabled_agent_fails():
-    container = AppContainer(Settings())
-    container.auth.seed("tok-user", subject="user-1", tenant_id="local")
-    container.chat.register("chat-1")
-    container.agent_config.register("local", "onecx-agent", 1, voice_enabled=False)
-    session = _session(container)
-    events = await session.dispatch(_start())
-    assert session.state is SessionState.CREATED
-    assert events[0].code == "config_unavailable"
 
 
 async def test_start_verifies_token_from_message_not_url():
@@ -121,73 +105,61 @@ async def test_start_verifies_token_from_message_not_url():
     assert seen == ["from-message"]
 
 
-async def test_token_propagates_to_mcp_discovery():
-    """The principal token reaches the one-time MCP discovery."""
-    seen: list[str] = []
+def _snapshot_with_servers() -> AgentConfigSnapshot:
+    return AgentConfigSnapshot(
+        agent_id="onecx-agent",
+        schema_version="1",
+        mcp_servers=[
+            McpServerSnapshot(
+                name="crm",
+                url="https://crm.example/mcp",
+                unlisted_tool_permission=PermissionAction.DENY,
+                tool_rules=[
+                    ToolRule(tool_name="safe", permission=PermissionAction.ALWAYS_ALLOW),
+                    ToolRule(tool_name="asked", permission=PermissionAction.ALWAYS_ASK),
+                ],
+            ),
+            McpServerSnapshot(
+                name="docs",
+                url="https://docs.example/mcp",
+                unlisted_tool_permission=PermissionAction.ALWAYS_ALLOW,
+            ),
+        ],
+    )
 
-    class RecordingMcp:
-        async def invoke(self, proposal, args=None):
-            raise NotImplementedError
 
-        async def discover(self, apm_principal_token: str) -> McpDiscovery:
-            seen.append(apm_principal_token)
-            return McpDiscovery()
-
+async def test_discovery_uses_the_agents_servers_and_token():
+    """MCP servers come from the pinned agent configuration, not global settings."""
     container = _container()
-    container.mcp = RecordingMcp()  # type: ignore[assignment]
+    container.agent_config.register(_snapshot_with_servers())
     session = _session(container)
     await session.dispatch(_start())
-    assert seen == ["tok-user"]
+    assert container.mcp.calls == [(["crm", "docs"], "tok-user")]
 
 
 async def test_start_filters_to_always_allow_tools_only():
     container = _container()
-    # The pinned snapshot carries the per-tool policy: "safe" is ALWAYS_ALLOW,
-    # "asked" is ALWAYS_ASK; "listed" has no rule and falls to the unlisted DENY.
-    snapshot = AgentConfigSnapshot(
-        agent_id="onecx-agent",
-        version=1,
-        unlisted_tool_permission=PermissionAction.DENY,
-        tools=[
-            AgentToolSnapshot(tool_name="safe", allowed=PermissionAction.ALWAYS_ALLOW),
-            AgentToolSnapshot(tool_name="asked", allowed=PermissionAction.ALWAYS_ASK),
-        ],
-    )
-    discovered = [
-        AgentToolSnapshot(tool_name="safe"),
-        AgentToolSnapshot(tool_name="asked"),
-        AgentToolSnapshot(tool_name="listed"),
-    ]
-
-    class FilteringMcp:
-        async def invoke(self, proposal, args=None):
-            raise NotImplementedError
-
-        async def discover(self, apm_principal_token: str) -> McpDiscovery:
-            return McpDiscovery(tools=list(discovered))
-
-    container.mcp = FilteringMcp()  # type: ignore[assignment]
-
-    class Pinning:
-        async def pin(self, tenant_id, agent_id, apm_principal_token) -> AgentConfigSnapshot:
-            return snapshot
-
-    container.agent_config = Pinning()  # type: ignore[assignment]
+    container.agent_config.register(_snapshot_with_servers())
+    container.mcp.tools = {"crm": ["safe", "asked", "listed"], "docs": ["search"]}
     session = _session(container)
     await session.dispatch(_start())
-    # Only "safe" resolves to ALWAYS_ALLOW (explicit); "asked" is ALWAYS_ASK and
-    # "listed" falls to the DENY unlisted default.
-    assert [t.tool_name for t in session.allowed_tools] == ["safe"]
+    # crm: "safe" is ALWAYS_ALLOW, "asked" ALWAYS_ASK, "listed" falls to DENY;
+    # docs: "search" has no rule and falls to that server's ALWAYS_ALLOW.
+    assert [(t.server_name, t.tool_name) for t in session.allowed_tools] == [
+        ("crm", "safe"),
+        ("docs", "search"),
+    ]
 
 
 async def test_start_emits_degraded_capability_for_failed_server():
     container = _container()
-    container.mcp.mark_degraded("inmemory", "connection refused")
+    container.agent_config.register(_snapshot_with_servers())
+    container.mcp.failures = {"crm": "connection refused"}
     session = _session(container)
     events = await session.dispatch(_start())
     kinds = [e.kind for e in events]
     assert kinds == ["session_ready", "degraded_capability"]
-    assert "inmemory" in events[1].reason
+    assert "crm" in events[1].reason
 
 
 async def test_refresh_replaces_session_tokens():

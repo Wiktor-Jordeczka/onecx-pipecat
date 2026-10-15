@@ -33,42 +33,46 @@ class PermissionAction(StrEnum):
     ALWAYS_ALLOW = "ALWAYS_ALLOW"
 
 
-class ExecutionPolicy(StrEnum):
-    """Server-level default policy for a tool connection (provider-svc ``ExecutionPolicy``)."""
+class ToolRule(BaseModel):
+    """A resolved per-tool permission (ai-provider ``ToolRuleConfiguration``)."""
 
-    DENY = "DENY"
-    ALWAYS_ASK = "ALWAYS_ASK"
-    ALWAYS_ALLOW = "ALWAYS_ALLOW"
+    tool_name: str
+    permission: PermissionAction
+    description: str = ""
+
+
+class McpServerSnapshot(BaseModel):
+    """One MCP server of the pinned agent configuration (ai-provider ``McpServerConfiguration``)."""
+
+    id: str = ""
+    name: str
+    url: str
+    credential_ref: str = ""
+    unlisted_tool_permission: PermissionAction = PermissionAction.DENY
+    tool_rules: list[ToolRule] = Field(default_factory=list)
 
 
 class AgentConfigSnapshot(BaseModel):
-    """A pinned agent configuration version for one voice session.
+    """The agent configuration pinned for one voice session.
 
-    The payload is fetched once at session start and pinned for the whole
-    session; configuration changes apply to the next session. ``voice_enabled``
-    is a gate on the agent itself and ``unlisted_tool_permission`` is the
-    resolved policy for discovered tools that have no explicit rule.
+    Fetched once at session start (ai-provider ``AgentConfiguration``) and
+    pinned for the whole session; configuration changes apply to the next
+    session. Tool policy is already resolved by ai-provider per MCP server.
     """
 
     agent_id: str
-    version: int
+    schema_version: str
     system_prompt: str = ""
-    tool_names: list[str] = Field(default_factory=list)
-    tools: list[AgentToolSnapshot] = Field(default_factory=list)
-    unlisted_tool_permission: PermissionAction = PermissionAction.ALWAYS_ASK
-    voice_enabled: bool = True
+    mcp_servers: list[McpServerSnapshot] = Field(default_factory=list)
 
 
 class AgentToolSnapshot(BaseModel):
-    """Tool metadata captured in an agent snapshot for runtime policy/routing."""
+    """A tool discovered on one of the snapshot's MCP servers."""
 
-    tool_id: str = ""
     tool_name: str
+    server_name: str
+    server_url: str = ""
     tool_description: str = ""
-    server_name: str = "inmemory"
-    server_url: str = "inmemory"
-    execution_policy: ExecutionPolicy = ExecutionPolicy.ALWAYS_ASK
-    allowed: PermissionAction | None = None
 
 
 class VoiceEntryKind(StrEnum):
@@ -94,14 +98,6 @@ class PermissionDecision(BaseModel):
 
     action: PermissionAction
     reason: str = ""
-
-
-class AgentMcpToolRule(BaseModel):
-    """A per-agent rule for one discovered tool (provider-svc ``AgentMcpToolRule``)."""
-
-    tool_name: str
-    allowed: PermissionAction
-    tool_description: str = ""
 
 
 class PermissionDecisionStatus(StrEnum):

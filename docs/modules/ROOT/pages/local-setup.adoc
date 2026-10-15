@@ -35,7 +35,14 @@ curl -s http://127.0.0.1:8080/healthz
 ----
 
 Expect a JSON body with `"status": "OK"`, the app name, the `pipecat`
-version, and the seven adapter implementations.
+version, and the adapter implementations.
+
+A voice session needs the real OneCX services: set `ONECX_AUTH__ISSUER` (the
+Keycloak realm URL; its JWKS and token endpoint are derived from it),
+`ONECX_AUTH__CLIENT_ID`, `ONECX_AUTH__CLIENT_SECRET`,
+`ONECX_AGENT_CONFIG__BASE_URL`, `ONECX_CHAT__BASE_URL`, and
+`ONECX_PERMISSION__BASE_URL` (see xref:configuration.adoc[]). If the issuer
+is unreachable every `start_session` fails with `authentication_failed`.
 
 The authenticated voice WebSocket is served at `/ws/voice`; see
 xref:voice-session.adoc[] for its command and event contract.

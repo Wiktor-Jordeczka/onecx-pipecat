@@ -21,6 +21,7 @@ from onecx_pipecat.adapters.factory import (
     build_mcp,
     build_permission,
     build_persistence,
+    build_service_auth,
     build_stt,
     build_tts,
 )
@@ -48,13 +49,14 @@ class AppContainer:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
-        self.auth: AuthAdapter = build_auth(self.settings)
-        self.agent_config: AgentConfigAdapter = build_agent_config(self.settings)
-        self.chat: ChatAdapter = build_chat(self.settings)
+        service_auth = build_service_auth(self.settings)
+        self.auth: AuthAdapter = build_auth(self.settings, service_auth)
+        self.agent_config: AgentConfigAdapter = build_agent_config(self.settings, service_auth)
+        self.chat: ChatAdapter = build_chat(self.settings, service_auth)
         self.stt: SttAdapter = build_stt(self.settings)
         self.tts: TtsAdapter = build_tts(self.settings)
         self.persistence: InMemoryPersistence = build_persistence(self.settings)
-        self.permission: PermissionAdapter = build_permission(self.settings)
+        self.permission: PermissionAdapter = build_permission(self.settings, service_auth)
         self.mcp: McpAdapter = build_mcp(self.settings)
 
     def adapters(self) -> AdapterSummary:

@@ -4,24 +4,88 @@ The wire contract: the client's first message carries the user's
 ``apm-principal-token`` (and the browser's ``Authorization`` value). The
 adapter verifies that token — signature, issuer and expiry for a real
 deployment — and reports expiry so a session can end with a typed error when
-the tokens lapse without a refresh. ``service_token`` obtains Pipecat's own
-OIDC client-credentials token for outbound calls to OneCX services (the
+the tokens lapse without a refresh. ``ClientCredentialsAuth`` obtains Pipecat's
+own OIDC client-credentials token for outbound calls to OneCX services (the
 apm-principal-token is propagated on top of it, BFF-style).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator
 from typing import Protocol
+
+import httpx
 
 from onecx_pipecat.config import AuthSettings
 from onecx_pipecat.models import Principal
 
+# Refresh the service token this long before it expires.
+_TOKEN_EXPIRY_SKEW_SECONDS = 30.0
+# Unknown ``kid`` values refetch the JWKS at most this often (rotation, not a DoS lever).
+_JWKS_MIN_REFETCH_SECONDS = 60.0
+
+
+def _keycloak_endpoint(settings: AuthSettings, path: str) -> str:
+    return f"{settings.issuer.rstrip('/')}/protocol/openid-connect/{path}"
+
 
 class AuthenticationError(Exception):
     """Raised when a credential cannot be validated."""
+
+
+class ServiceTokenError(httpx.HTTPError):
+    """The token endpoint answered without a usable access token.
+
+    An ``httpx.HTTPError`` so HTTP adapters fail closed exactly as for any
+    other transport failure.
+    """
+
+
+class ClientCredentialsAuth(httpx.Auth):
+    """Attach Pipecat's OIDC client-credentials token as ``Authorization: Bearer``.
+
+    The token is requested from ``auth.token_endpoint`` (default: the Keycloak
+    endpoint of ``auth.issuer``) with ``client_id``/``client_secret`` and cached
+    until shortly before it expires.
+    """
+
+    def __init__(self, settings: AuthSettings, client: httpx.AsyncClient | None = None) -> None:
+        self._settings = settings
+        self._client = client
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def token(self) -> str:
+        async with self._lock:
+            if self._token and time.time() < self._expires_at - _TOKEN_EXPIRY_SKEW_SECONDS:
+                return self._token
+            client = self._client or httpx.AsyncClient()
+            try:
+                response = await client.post(
+                    self._settings.token_endpoint or _keycloak_endpoint(self._settings, "token"),
+                    data={"grant_type": "client_credentials"},
+                    auth=httpx.BasicAuth(self._settings.client_id, self._settings.client_secret),
+                )
+                response.raise_for_status()
+                body = response.json()
+                self._token = str(body["access_token"])
+                self._expires_at = time.time() + float(body.get("expires_in", 60))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ServiceTokenError("token endpoint returned no access_token") from exc
+            finally:
+                if self._client is None:
+                    await client.aclose()
+            return self._token
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        request.headers["Authorization"] = f"Bearer {await self.token()}"
+        yield request
 
 
 class AuthAdapter(Protocol):
@@ -42,101 +106,65 @@ class AuthAdapter(Protocol):
         ...
 
 
-@dataclass
-class _InMemoryCredential:
-    token: str
-    subject: str
-    tenant_id: str
-    roles: list[str]
-    expired: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.token or not self.subject or not self.tenant_id:
-            raise ValueError("token/subject/tenant_id required")
-
-
-class InMemoryAuthAdapter:
-    """Deterministic token table for local runs and tests.
-
-    Resolves a token against a local table rather than parsing JWTs; an entry
-    seeded as expired stands in for a lapsed ``apm-principal-token`` so the
-    fail-closed and refresh paths are exercisable offline.
-    """
-
-    def __init__(self, settings: AuthSettings | None = None) -> None:
-        self._settings = settings or AuthSettings()
-        self._table: dict[str, _InMemoryCredential] = {}
-        self._service_token: str = ""
-
-    def seed(
-        self,
-        token: str,
-        subject: str,
-        tenant_id: str,
-        roles: list[str] | None = None,
-        *,
-        expired: bool = False,
-    ) -> None:
-        self._table[token] = _InMemoryCredential(
-            token=token,
-            subject=subject,
-            tenant_id=tenant_id,
-            roles=list(roles or []),
-            expired=expired,
-        )
-
-    def mark_expired(self, token: str) -> None:
-        """Stand-in for a token whose ``exp`` claim has passed."""
-        cred = self._table.get(token)
-        if cred is not None:
-            cred.expired = True
-
-    def set_service_token(self, token: str) -> None:
-        self._service_token = token
-
-    def _principal(self, token: str) -> Principal:
-        cred = self._table.get(token)
-        if cred is None or cred.expired:
-            raise AuthenticationError("unknown or expired token")
-        return Principal(subject=cred.subject, tenant_id=cred.tenant_id, roles=list(cred.roles))
-
-    async def authenticate(self, token: str) -> Principal:
-        return self._principal(token)
-
-    def is_expired(self, token: str) -> bool:
-        cred = self._table.get(token)
-        return cred is None or cred.expired
-
-    async def refresh(self, token: str) -> Principal:
-        return self._principal(token)
-
-    async def service_token(self) -> str:
-        return self._service_token or "pipecat-service-token"
-
-
 class JwtAuthAdapter:
     """Verify ``apm-principal-token`` against Keycloak's JWKS.
 
     Validates the signature (RS256), issuer, audience and ``exp`` exactly the
     way ``onecx-permission-svc`` does, using the configured issuer and key set.
-    Keys come from ``settings.jwks`` (an embedded JWKS JSON document). The
-    token's ``kid`` header selects which JWKS key verifies it, so a rotated
-    multi-key set is used correctly instead of always trying the first key.
-    The factory builds this adapter when ``auth.backend`` is ``"jwt"``; the
-    default (``"inmemory"``) uses the in-memory stand-in so local runs need
-    no Keycloak access.
+    ``settings.jwks`` is either an embedded JWKS JSON document or a URL; when
+    empty, the Keycloak ``certs`` endpoint of ``auth.issuer`` is fetched. The
+    token's ``kid`` header selects which JWKS key verifies it, and an unknown
+    ``kid`` refetches the set (key rotation), rate-limited.
     """
 
-    def __init__(self, settings: AuthSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: AuthSettings | None = None,
+        service_auth: ClientCredentialsAuth | None = None,
+    ) -> None:
         self._settings = settings or AuthSettings()
+        self._service_auth = service_auth or ClientCredentialsAuth(self._settings)
+        self._client: httpx.AsyncClient | None = None
         self._keys: list[dict] | None = None
         self._keys_by_kid: dict[str, object] | None = None
-        if self._settings.jwks:
-            self._keys = self._normalize(self._settings.jwks)
+        self._jwks_url: str | None = None
+        self._fetched_at = float("-inf")
+        jwks = self._settings.jwks.strip()
+        if jwks.startswith(("{", "[")):
+            self._keys = self._normalize(jwks)
+        else:
+            self._jwks_url = jwks or _keycloak_endpoint(self._settings, "certs")
+
+    def set_client(self, client: httpx.AsyncClient) -> None:
+        """Inject the client used to fetch the JWKS (tests avoid a live network call)."""
+        self._client = client
 
     def set_jwks(self, jwks: object) -> None:
+        """Pin an explicit key set; it is never refetched."""
         self._keys = self._normalize(jwks)
         self._keys_by_kid = None
+        self._jwks_url = None
+
+    async def _ensure_keys(self, kid: str | None) -> None:
+        """Fetch the JWKS when none is loaded or the token's ``kid`` is unknown."""
+        if self._jwks_url is None:
+            return
+        if self._keys is not None and (kid is None or kid in {k.get("kid") for k in self._keys}):
+            return
+        if time.monotonic() - self._fetched_at < _JWKS_MIN_REFETCH_SECONDS:
+            return
+        self._fetched_at = time.monotonic()
+        client = self._client or httpx.AsyncClient()
+        try:
+            response = await client.get(self._jwks_url)
+            response.raise_for_status()
+            self._keys = self._normalize(response.json())
+            self._keys_by_kid = None
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AuthenticationError(f"JWKS unavailable: {exc}") from exc
+        finally:
+            if self._client is None:
+                await client.aclose()
 
     @staticmethod
     def _normalize(jwks: object) -> list[dict]:
@@ -211,6 +239,7 @@ class JwtAuthAdapter:
             kid = jwt.get_unverified_header(token).get("kid")
         except Exception:  # noqa: BLE001 - malformed header; the token is rejected below
             kid = None
+        await self._ensure_keys(kid)
         key = self._key_for_kid(kid)
         if key is None:
             raise AuthenticationError("no JWKS key matches the token")
@@ -259,7 +288,4 @@ class JwtAuthAdapter:
         return await self.authenticate(token)
 
     async def service_token(self) -> str:
-        # A real deployment exchanges the configured client credentials at the
-        # OIDC token endpoint; this stand-in reports the configured client id so
-        # the boundary is visible without a live issuer.
-        return self._settings.client_id
+        return await self._service_auth.token()

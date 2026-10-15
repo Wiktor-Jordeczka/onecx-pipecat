@@ -18,19 +18,16 @@ class AuthSettings(BaseSettings):
     issuer: str = "https://auth.example"
     audience: str = "onecx-pipecat"
     token_claim_subject: str = "sub"
-    # Keycloak JWKS (embedded JSON or a URL the adapter fetches once) used to
-    # verify ``apm-principal-token`` signature, issuer and expiry.
+    # Keycloak JWKS used to verify ``apm-principal-token``: an embedded JSON
+    # document or a URL; empty fetches ``{issuer}/protocol/openid-connect/certs``.
     jwks: str = ""
     # Pipecat's own OIDC client credentials, used to authenticate outbound
     # calls to OneCX services the way a BFF does (apm-principal-token is also
     # propagated to act as the user).
     client_id: str = "onecx-pipecat"
     client_secret: str = ""
-    token_endpoint: str = "https://auth.example/protocol/openid-connect/token"
-    # Which auth adapter the factory builds: "inmemory" (default) or "jwt"
-    # (verifies ``apm-principal-token`` against the Keycloak JWKS). Selecting
-    # the real adapter is a configuration change, not a code change.
-    backend: str = "inmemory"
+    # Empty uses ``{issuer}/protocol/openid-connect/token``.
+    token_endpoint: str = ""
 
 
 class AgentConfigSettings(BaseSettings):
@@ -38,23 +35,15 @@ class AgentConfigSettings(BaseSettings):
 
     default_agent_id: str = "onecx-agent"
     default_snapshot_version: int = 1
-    # Base URL of the service exposing ``GET /v1/agents/{agent_id}/configuration``.
-    base_url: str = "https://agentsvc.example"
-    # Which agent-config adapter the factory builds: "inmemory" (default) or
-    # "http" (calls the configuration endpoint). Selecting a real adapter is a
-    # configuration change, not a code change.
-    backend: str = "inmemory"
+    # Base URL of onecx-ai-provider-svc (``GET /v1/agents/{id}/configuration``).
+    base_url: str = "http://onecx-ai-provider-svc:8080"
 
 
 class ChatSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_CHAT__")
 
     # Base URL of onecx-chat-svc, used to load a chat by id as the user.
-    base_url: str = "https://chat.example"
-    # Which chat adapter the factory builds: "inmemory" (default) or "http"
-    # (calls onecx-chat-svc). Selecting a real adapter is a configuration
-    # change, not a code change.
-    backend: str = "inmemory"
+    base_url: str = "http://onecx-chat-svc:8080"
 
 
 class SpeechSettings(BaseSettings):
@@ -75,22 +64,21 @@ class PersistenceSettings(BaseSettings):
 class PermissionSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERMISSION__")
 
-    default_action: str = "always_ask"
-    # Base URL of onecx-permission-svc, used to check the user's existing voice
-    # permission through the existing permission interface.
-    base_url: str = "https://permissions.example"
+    # Base URL of onecx-permission-svc (``POST /internal/permissions/me``).
+    base_url: str = "http://onecx-permission-svc:8080"
+    # The OneCX permission that grants voice; a user needs one entry matching all three.
+    voice_product_name: str = "onecx-ai"
+    voice_resource: str = "VOICE"
+    voice_action: str = "USE"
+    page_size: int = 100
 
 
 class McpSettings(BaseSettings):
+    """Operator-level MCP knobs; server URLs come from the agent configuration."""
+
     model_config = SettingsConfigDict(env_prefix="ONECX_MCP__")
 
-    default_server_name: str = "inmemory"
-    servers: dict[str, str] = Field(default_factory=lambda: {"inmemory": "inmemory"})
     timeout_seconds: float = 30.0
-    # Which MCP adapter the factory builds: "inmemory" (default) or "http"
-    # (discovers tools over the configured HTTP servers). Selecting a real
-    # adapter is a configuration change, not a code change.
-    backend: str = "inmemory"
 
 
 class Settings(BaseSettings):

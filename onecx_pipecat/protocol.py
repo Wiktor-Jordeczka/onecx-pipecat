@@ -59,7 +59,7 @@ class SessionReady(BaseModel):
     kind: Literal["session_ready"] = "session_ready"
     session_id: str
     agent_id: str
-    agent_version: int
+    schema_version: str
 
 
 class Transcript(BaseModel):

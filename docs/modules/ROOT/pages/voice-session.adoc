@@ -61,7 +61,7 @@ Events are JSON objects with a `kind` field, emitted by the session.
 |===
 | `kind` | Meaning
 
-| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `agent_version`.
+| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `schema_version` (the pinned `AgentConfiguration.schemaVersion`).
 | `transcript` | Finalized speech recognition; carries `text` and `state`.
 | `assistant_text` | Assistant caption; carries `text` and `status`.
 | `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`COMPLETE` or `FAILED`).

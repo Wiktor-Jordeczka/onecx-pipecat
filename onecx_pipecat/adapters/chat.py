@@ -24,15 +24,15 @@ class Chat(Protocol):
     """The chat a voice session is anchored to."""
 
     chat_id: str
-    title: str
+    topic: str
 
 
 class _Chat:
-    """Concrete stand-in for the chat record returned by onecx-chat-svc."""
+    """The subset of the onecx-chat-svc ``Chat`` record a session needs."""
 
-    def __init__(self, chat_id: str, title: str = "") -> None:
+    def __init__(self, chat_id: str, topic: str = "") -> None:
         self.chat_id = chat_id
-        self.title = title
+        self.topic = topic
 
 
 class ChatAdapter(Protocol):
@@ -41,33 +41,20 @@ class ChatAdapter(Protocol):
     async def load(self, chat_id: str, apm_principal_token: str) -> Chat: ...
 
 
-class InMemoryChatAdapter:
-    """Deterministic chat table for local runs and tests."""
-
-    def __init__(self, settings: ChatSettings | None = None) -> None:
-        self._settings = settings or ChatSettings()
-        self._table: dict[str, Chat] = {}
-
-    def register(self, chat_id: str, title: str = "") -> None:
-        self._table[chat_id] = _Chat(chat_id=chat_id, title=title)
-
-    async def load(self, chat_id: str, apm_principal_token: str) -> Chat:
-        chat = self._table.get(chat_id)
-        if chat is None:
-            raise ChatAccessError(f"chat {chat_id!r} not found or not accessible")
-        return chat
-
-
 class HttpChatAdapter:
     """Load a chat from onecx-chat-svc, propagating ``apm-principal-token``.
 
-    A 404/403 or any transport failure is surfaced as ``ChatAccessError`` so
-    the session fails closed without distinguishing between "not found" and
-    "forbidden" (both mean "no voice here").
+    Calls ``GET /internal/chats/{id}`` until chat-svc ships a user-scoped
+    ``GET /v1/chats/{chatId}`` (onecx/internal-tasks#995). A 404/403 or any
+    transport failure is surfaced as ``ChatAccessError`` so the session fails
+    closed.
     """
 
-    def __init__(self, settings: ChatSettings | None = None) -> None:
+    def __init__(
+        self, settings: ChatSettings | None = None, service_auth: httpx.Auth | None = None
+    ) -> None:
         self._settings = settings or ChatSettings()
+        self._service_auth = service_auth
         self._client: httpx.AsyncClient | None = None
 
     def set_client(self, client: httpx.AsyncClient) -> None:
@@ -79,7 +66,9 @@ class HttpChatAdapter:
         headers = {"apm-principal-token": apm_principal_token}
         try:
             response = await client.get(
-                f"{self._settings.base_url}/v1/chats/{chat_id}", headers=headers
+                f"{self._settings.base_url}/internal/chats/{chat_id}",
+                headers=headers,
+                auth=self._service_auth,
             )
         except httpx.HTTPError as exc:
             raise ChatAccessError(f"chat service unreachable: {exc}") from exc
@@ -88,7 +77,7 @@ class HttpChatAdapter:
         if not response.is_success:
             raise ChatAccessError(f"chat service error: {response.status_code}")
         body: dict[str, Any] = response.json()
-        result = _Chat(chat_id=chat_id, title=body.get("title", ""))
+        result = _Chat(chat_id=str(body.get("id") or chat_id), topic=str(body.get("topic") or ""))
         if self._client is None:
             await client.aclose()
         return result

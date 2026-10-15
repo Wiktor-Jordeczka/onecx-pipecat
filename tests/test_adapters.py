@@ -1,83 +1,54 @@
+import base64
+import json
+from contextlib import asynccontextmanager
+
+import httpx
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from onecx_pipecat.adapters import (
-    InMemoryAgentConfigAdapter,
-    InMemoryAuthAdapter,
-    InMemoryChatAdapter,
-    InMemoryMcpAdapter,
-    InMemoryPermissionAdapter,
+    HttpAgentConfigAdapter,
+    HttpChatAdapter,
+    HttpMcpAdapter,
+    HttpPermissionAdapter,
     InMemoryPersistence,
     InMemorySttAdapter,
     InMemoryTtsAdapter,
+    JwtAuthAdapter,
 )
+from onecx_pipecat.adapters import auth as auth_module
 from onecx_pipecat.adapters.agent_config import AgentConfigError
-from onecx_pipecat.adapters.auth import AuthenticationError
+from onecx_pipecat.adapters.auth import (
+    AuthenticationError,
+    ClientCredentialsAuth,
+    ServiceTokenError,
+)
 from onecx_pipecat.adapters.chat import ChatAccessError
-from onecx_pipecat.adapters.mcp import McpToolResult
-from onecx_pipecat.config import McpSettings, PermissionSettings, PersistenceSettings
+from onecx_pipecat.adapters.permission import allowed_tools, resolve_tool_permission
+from onecx_pipecat.config import (
+    AgentConfigSettings,
+    AuthSettings,
+    ChatSettings,
+    PermissionSettings,
+    PersistenceSettings,
+)
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
     AgentToolSnapshot,
-    ExecutionPolicy,
+    McpServerSnapshot,
     PermissionAction,
-    PermissionDecisionStatus,
     Principal,
     ToolProposal,
+    ToolRule,
     VoiceEntry,
     VoiceEntryKind,
 )
 
-
-async def test_auth_unknown_token_raises():
-    auth = InMemoryAuthAdapter()
-    with pytest.raises(AuthenticationError):
-        await auth.authenticate("nope")
+_PRINCIPAL = Principal(subject="user-1", tenant_id="local")
 
 
-async def test_auth_seeded_token_returns_principal():
-    auth = InMemoryAuthAdapter()
-    auth.seed("t1", "user-1", "acme", ["operator"])
-    p = await auth.authenticate("t1")
-    assert p.subject == "user-1"
-    assert p.tenant_id == "acme"
-    assert p.roles == ["operator"]
-
-
-async def test_agent_config_pins_highest_version():
-    cfg = InMemoryAgentConfigAdapter()
-    cfg.register("acme", "a", version=1, system_prompt="v1", tool_names=["w.get"])
-    cfg.register("acme", "a", version=2, system_prompt="v2", tool_names=["w.get", "w.set"])
-    snap = await cfg.pin("acme", "a", "tok")
-    assert snap.version == 2
-    assert snap.system_prompt == "v2"
-
-
-async def test_agent_config_snapshot_can_carry_tools_and_policy_hints():
-    cfg = InMemoryAgentConfigAdapter()
-    cfg.register(
-        "acme",
-        "a",
-        version=1,
-        tools=[
-            AgentToolSnapshot(
-                tool_id="tool-1",
-                tool_name="w.get",
-                tool_description="Weather read",
-                server_name="weather",
-                server_url="https://weather.example/mcp",
-                execution_policy=ExecutionPolicy.ALWAYS_ASK,
-                allowed=PermissionAction.ALWAYS_ASK,
-            )
-        ],
-    )
-
-    snap = await cfg.pin("acme", "a", "tok")
-    assert snap.tools[0].tool_id == "tool-1"
-    assert snap.tools[0].tool_name == "w.get"
-    assert snap.tools[0].server_name == "weather"
-    assert snap.tools[0].allowed is PermissionAction.ALWAYS_ASK
-    # tool_names remains available for older call paths.
-    assert snap.tool_names == ["w.get"]
+def _client(handler) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 async def test_stt_tts_are_deterministic():
@@ -97,63 +68,6 @@ async def test_persistence_round_trip():
     assert len(entries) == 1
     fetched = await store.get("s1", entry_id)
     assert fetched is not None and fetched.text == "hi"
-
-
-async def test_permission_exact_rule_wins():
-    perm = InMemoryPermissionAdapter()
-    perm.set_rule("send_email", PermissionAction.ALWAYS_ASK)
-    proposal = ToolProposal(
-        proposal_id="p1",
-        tool_name="send_email",
-        arguments={"to": "a@b.c"},
-        status=PermissionDecisionStatus.PENDING,
-    )
-    decision = await perm.evaluate(proposal)
-    assert decision.action is PermissionAction.ALWAYS_ASK
-    assert decision.reason == "agent tool rule"
-
-
-async def test_permission_exact_rule_can_deny_or_allow():
-    perm = InMemoryPermissionAdapter()
-    perm.set_rule("drop_table", PermissionAction.DENY)
-    perm.set_rule("list_items", PermissionAction.ALWAYS_ALLOW)
-    assert (await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="drop_table"))).action is (
-        PermissionAction.DENY
-    )
-    assert (await perm.evaluate(ToolProposal(proposal_id="p2", tool_name="list_items"))).action is (
-        PermissionAction.ALWAYS_ALLOW
-    )
-
-
-async def test_permission_falls_back_to_server_default_ask():
-    perm = InMemoryPermissionAdapter()
-    perm.set_server_default(ExecutionPolicy.ALWAYS_ASK)
-    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
-    assert decision.action is PermissionAction.ALWAYS_ASK
-    assert decision.reason == "server default policy"
-
-
-async def test_permission_server_default_always_allow_maps_to_allow():
-    """An ``ALWAYS_ALLOW`` server default advertises an unruled tool."""
-    perm = InMemoryPermissionAdapter()
-    perm.set_server_default(ExecutionPolicy.ALWAYS_ALLOW)
-    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
-    assert decision.action is PermissionAction.ALWAYS_ALLOW
-
-
-async def test_permission_global_default_applies_without_rule_or_server_default():
-    """With no rule and no server default, the configured global default applies."""
-    perm = InMemoryPermissionAdapter()
-    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
-    assert decision.action is PermissionAction.ALWAYS_ASK
-    assert decision.reason == "global default policy"
-
-
-async def test_permission_global_default_deny_denies_unruled_tool():
-    """`permission.default_action=deny` denies a tool with no rule/server default."""
-    perm = InMemoryPermissionAdapter(PermissionSettings(default_action="deny"))
-    decision = await perm.evaluate(ToolProposal(proposal_id="p1", tool_name="unruled"))
-    assert decision.action is PermissionAction.DENY
 
 
 async def test_persistence_evicts_oldest_entry_when_cap_exceeded():
@@ -178,123 +92,6 @@ async def test_persistence_eviction_is_per_session():
     await store.append("s2", VoiceEntry(kind=VoiceEntryKind.HUMAN, text="s2-0"))
     assert [e.text for e in await store.list_entries("s1")] == ["a1", "a2"]
     assert [e.text for e in await store.list_entries("s2")] == ["s2-0"]
-
-
-async def test_mcp_unknown_tool_is_sanitized_failure():
-    mcp = InMemoryMcpAdapter()
-    result = await mcp.invoke(ToolProposal(proposal_id="p1", tool_name="missing"))
-    assert result.ok is False
-    assert "unknown tool" in result.error
-    assert isinstance(result, McpToolResult)
-
-
-async def test_mcp_registered_tool_succeeds():
-    mcp = InMemoryMcpAdapter()
-
-    async def echo(args):
-        return {"echo": args}
-
-    mcp.register("echo", echo)
-    result = await mcp.invoke(ToolProposal(proposal_id="p1", tool_name="echo"), {"x": 1})
-    assert result.ok is True
-    assert result.value == {"echo": {"x": 1}}
-
-
-async def test_mcp_invoke_with_only_proposal_uses_arguments():
-    """Regression test: omitting args parameter should use proposal.arguments.
-
-    When a caller omits the args parameter (using the default None),
-    the adapter should fall back to proposal.arguments instead of
-    silently losing the tool's payload.
-    """
-    mcp = InMemoryMcpAdapter()
-
-    async def echo(args):
-        return {"echo": args}
-
-    mcp.register("echo", echo)
-    # Invoke with only proposal, no args parameter
-    proposal = ToolProposal(
-        proposal_id="p1",
-        tool_name="echo",
-        arguments={"x": 1, "y": "test"},
-    )
-    result = await mcp.invoke(proposal)  # args defaults to None
-    assert result.ok is True
-    assert result.value == {"echo": {"x": 1, "y": "test"}}
-
-
-async def test_mcp_supports_multiple_servers():
-    mcp = InMemoryMcpAdapter(
-        McpSettings(
-            default_server_name="alpha",
-            servers={"alpha": "inmemory://alpha", "beta": "inmemory://beta"},
-        )
-    )
-
-    async def alpha_echo(args):
-        return {"server": "alpha", "echo": args}
-
-    async def beta_echo(args):
-        return {"server": "beta", "echo": args}
-
-    mcp.register("echo", alpha_echo, server_name="alpha")
-    mcp.register("echo", beta_echo, server_name="beta")
-
-    default_result = await mcp.invoke(ToolProposal(proposal_id="p1", tool_name="echo"), {"x": 1})
-    beta_result = await mcp.invoke(
-        ToolProposal(proposal_id="p2", tool_name="echo", server_name="beta"),
-        {"x": 2},
-    )
-
-    assert default_result.ok is True
-    assert default_result.value == {"server": "alpha", "echo": {"x": 1}}
-    assert beta_result.ok is True
-    assert beta_result.value == {"server": "beta", "echo": {"x": 2}}
-
-
-async def test_mcp_unknown_server_is_sanitized_failure():
-    mcp = InMemoryMcpAdapter(
-        McpSettings(default_server_name="alpha", servers={"alpha": "inmemory://alpha"})
-    )
-    result = await mcp.invoke(
-        ToolProposal(proposal_id="p1", tool_name="echo", server_name="beta"),
-        {"x": 1},
-    )
-    assert result.ok is False
-    assert "unknown MCP server" in result.error
-
-
-# --- authentication: expiry, refresh, service token ---------------------
-
-
-async def test_auth_is_expired_flags_lapsed_token():
-    auth = InMemoryAuthAdapter()
-    auth.seed("t", "u", "t")
-    assert auth.is_expired("t") is False
-    auth.mark_expired("t")
-    assert auth.is_expired("t") is True
-
-
-async def test_auth_refresh_validates_new_token():
-    auth = InMemoryAuthAdapter()
-    auth.seed("new", "u", "t")
-    p = await auth.refresh("new")
-    assert p.subject == "u"
-    with pytest.raises(AuthenticationError):
-        await auth.refresh("stale")
-
-
-async def test_auth_expired_token_refresh_fails():
-    auth = InMemoryAuthAdapter()
-    auth.seed("t", "u", "t", expired=True)
-    with pytest.raises(AuthenticationError):
-        await auth.refresh("t")
-
-
-async def test_auth_service_token_defaults_to_pipecat_identity():
-    auth = InMemoryAuthAdapter()
-    assert await auth.service_token() == "pipecat-service-token"
 
 
 # --- JWT/JWKS verification (real signature + issuer + expiry) -----------
@@ -529,103 +326,404 @@ async def test_jwt_auth_falls_back_to_first_key_without_kid():
     assert (await auth.authenticate(token)).subject == "user-1"
 
 
-# --- agent configuration: voice gate + unlisted permission --------------
+# --- agent configuration: ai-provider GET /v1/agents/{id}/configuration ----
+
+_AGENT_CONFIGURATION = {
+    "schemaVersion": "1",
+    "context": {"tenantId": "local", "principal": "user-1"},
+    "agent": {"id": "agent-1", "name": "Helper"},
+    "voice": {"voiceEnabled": True, "languageCode": "en"},
+    "scaffold": {"id": "s1", "name": "default", "systemPrompt": "be brief"},
+    "mcpServers": [
+        {
+            "id": "srv-1",
+            "name": "crm",
+            "url": "https://crm.example/mcp",
+            "credentialRef": "crm-cred",
+            "unlistedToolPermission": "ALWAYS_ASK",
+            "unlistedToolPermissionSource": "TOOL_EXECUTION_POLICY",
+            "toolRules": [
+                {
+                    "toolName": "read",
+                    "description": "Read CRM",
+                    "permission": "ALWAYS_ALLOW",
+                    "policySource": "AGENT_TOOL_RULE",
+                }
+            ],
+        }
+    ],
+}
 
 
-async def test_agent_config_voice_disabled_fails():
-    cfg = InMemoryAgentConfigAdapter()
-    cfg.register("acme", "a", version=1, voice_enabled=False)
-    with pytest.raises(AgentConfigError):
-        await cfg.pin("acme", "a", "tok")
+async def _pin(status: int, body: dict | None = None, seen: list | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        return httpx.Response(status, json=body)
+
+    adapter = HttpAgentConfigAdapter(AgentConfigSettings(base_url="http://ai"))
+    adapter.set_client(_client(handler))
+    return await adapter.pin("local", "agent-1", "tok")
 
 
-async def test_agent_config_snapshot_carries_voice_and_unlisted_permission():
-    cfg = InMemoryAgentConfigAdapter()
-    cfg.register(
-        "acme",
-        "a",
-        version=1,
-        unlisted_tool_permission=PermissionAction.ALWAYS_ALLOW,
-        voice_enabled=True,
-    )
-    snap = await cfg.pin("acme", "a", "tok")
-    assert snap.voice_enabled is True
-    assert snap.unlisted_tool_permission is PermissionAction.ALWAYS_ALLOW
+async def test_agent_config_parses_ai_provider_configuration():
+    seen: list[httpx.Request] = []
+    snap = await _pin(200, _AGENT_CONFIGURATION, seen)
 
-
-# --- chat adapter --------------------------------------------------------
-
-
-async def test_chat_load_returns_registered_chat():
-    chat = InMemoryChatAdapter()
-    chat.register("c1", title="general")
-    loaded = await chat.load("c1", "tok")
-    assert loaded.chat_id == "c1"
-
-
-async def test_chat_missing_chat_raises_access_error():
-    chat = InMemoryChatAdapter()
-    with pytest.raises(ChatAccessError):
-        await chat.load("nope", "tok")
-
-
-# --- mcp discovery: skip and report failures ----------------------------
-
-
-async def test_mcp_discover_returns_registered_tools():
-    mcp = InMemoryMcpAdapter()
-
-    async def echo(args):
-        return args
-
-    mcp.register("echo", echo)
-    discovery = await mcp.discover("tok")
-    assert [t.tool_name for t in discovery.tools] == ["echo"]
-    assert discovery.degraded == []
-
-
-async def test_mcp_discover_skips_and_reports_failed_server():
-    mcp = InMemoryMcpAdapter()
-    mcp.mark_degraded("inmemory", "connection refused")
-    discovery = await mcp.discover("tok")
-    assert discovery.tools == []
-    assert discovery.degraded == [("inmemory", "connection refused")]
-
-
-# --- permission: voice eligibility + tool filtering ---------------------
-
-
-async def test_voice_permission_default_allows_and_can_be_revoked():
-    perm = InMemoryPermissionAdapter()
-    principal = Principal(subject="user-1", tenant_id="local")
-    assert await perm.has_voice_permission(principal, "tok") is True
-    perm.set_voice_permission("user-1", False)
-    assert await perm.has_voice_permission(principal, "tok") is False
-
-
-async def test_allowed_tools_filters_to_always_allow_only():
-    perm = InMemoryPermissionAdapter()
-    snapshot = AgentConfigSnapshot(
-        agent_id="a",
-        version=1,
-        unlisted_tool_permission=PermissionAction.ALWAYS_ASK,
-    )
-    discovered = [
-        AgentToolSnapshot(tool_name="read"),
-        AgentToolSnapshot(tool_name="write"),
+    assert seen[0].method == "GET"
+    assert str(seen[0].url) == "http://ai/v1/agents/agent-1/configuration"
+    assert seen[0].headers["apm-principal-token"] == "tok"
+    assert snap.agent_id == "agent-1"
+    assert snap.schema_version == "1"
+    assert snap.system_prompt == "be brief"
+    server = snap.mcp_servers[0]
+    assert (server.id, server.name, server.url) == ("srv-1", "crm", "https://crm.example/mcp")
+    assert server.credential_ref == "crm-cred"
+    assert server.unlisted_tool_permission is PermissionAction.ALWAYS_ASK
+    assert server.tool_rules == [
+        ToolRule(tool_name="read", permission=PermissionAction.ALWAYS_ALLOW, description="Read CRM")
     ]
-    perm.set_rule("read", PermissionAction.ALWAYS_ALLOW)
-    allowed = await perm.allowed_tools(snapshot, discovered)
-    assert [t.tool_name for t in allowed] == ["read"]
 
 
-async def test_allowed_tools_uses_unlisted_permission_when_no_rule():
-    perm = InMemoryPermissionAdapter()
-    snapshot = AgentConfigSnapshot(
-        agent_id="a",
-        version=1,
-        unlisted_tool_permission=PermissionAction.ALWAYS_ALLOW,
+@pytest.mark.parametrize("voice", [{"voiceEnabled": False}, {}, None])
+async def test_agent_config_without_voice_enabled_fails_closed(voice):
+    body = {**_AGENT_CONFIGURATION, "voice": voice}
+    with pytest.raises(AgentConfigError):
+        await _pin(200, body)
+
+
+@pytest.mark.parametrize("status", [404, 409, 500])
+async def test_agent_config_error_status_fails(status):
+    with pytest.raises(AgentConfigError):
+        await _pin(status, {})
+
+
+async def test_agent_config_server_without_url_is_invalid():
+    body = {**_AGENT_CONFIGURATION, "mcpServers": [{"name": "crm"}]}
+    with pytest.raises(AgentConfigError):
+        await _pin(200, body)
+
+
+# --- chat: onecx-chat-svc GET /internal/chats/{id} -------------------------
+
+
+async def test_chat_loads_from_internal_chat_endpoint():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "c1", "type": "AI_CHAT", "topic": "general"})
+
+    chat = HttpChatAdapter(ChatSettings(base_url="http://chat"))
+    chat.set_client(_client(handler))
+    loaded = await chat.load("c1", "tok")
+
+    assert str(seen[0].url) == "http://chat/internal/chats/c1"
+    assert seen[0].headers["apm-principal-token"] == "tok"
+    assert (loaded.chat_id, loaded.topic) == ("c1", "general")
+
+
+@pytest.mark.parametrize("status", [403, 404, 500])
+async def test_chat_error_status_raises_access_error(status):
+    chat = HttpChatAdapter(ChatSettings(base_url="http://chat"))
+    chat.set_client(_client(lambda _req: httpx.Response(status)))
+    with pytest.raises(ChatAccessError):
+        await chat.load("c1", "tok")
+
+
+# --- service token: OIDC client credentials --------------------------------
+
+_AUTH = AuthSettings(issuer="http://kc/realms/onecx", client_id="pipecat", client_secret="s3cr3t")
+
+
+def _token_endpoint(seen: list, status: int = 200, body: dict | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json=body or {"access_token": "svc-1", "expires_in": 300})
+
+    return _client(handler)
+
+
+async def test_service_token_uses_client_credentials_and_is_cached():
+    seen: list[httpx.Request] = []
+    service_auth = ClientCredentialsAuth(_AUTH, _token_endpoint(seen))
+    assert await service_auth.token() == "svc-1"
+    assert await service_auth.token() == "svc-1"
+
+    assert len(seen) == 1
+    assert str(seen[0].url) == "http://kc/realms/onecx/protocol/openid-connect/token"
+    assert seen[0].content == b"grant_type=client_credentials"
+    expected = "Basic " + base64.b64encode(b"pipecat:s3cr3t").decode()
+    assert seen[0].headers["authorization"] == expected
+
+
+async def test_service_token_is_sent_as_bearer_with_principal_token():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "c1", "topic": "general"})
+
+    chat = HttpChatAdapter(
+        ChatSettings(base_url="http://chat"), ClientCredentialsAuth(_AUTH, _token_endpoint([]))
     )
-    discovered = [AgentToolSnapshot(tool_name="any")]
-    allowed = await perm.allowed_tools(snapshot, discovered)
-    assert [t.tool_name for t in allowed] == ["any"]
+    chat.set_client(_client(handler))
+    await chat.load("c1", "tok")
+    assert seen[0].headers["authorization"] == "Bearer svc-1"
+    assert seen[0].headers["apm-principal-token"] == "tok"
+
+
+async def test_failed_service_token_fails_the_call_closed():
+    chat = HttpChatAdapter(
+        ChatSettings(base_url="http://chat"),
+        ClientCredentialsAuth(_AUTH, _token_endpoint([], status=401, body={"error": "x"})),
+    )
+    chat.set_client(_client(lambda _req: httpx.Response(200, json={"id": "c1"})))
+    with pytest.raises(ChatAccessError):
+        await chat.load("c1", "tok")
+
+
+async def test_token_response_without_access_token_is_an_error():
+    service_auth = ClientCredentialsAuth(_AUTH, _token_endpoint([], body={"token_type": "x"}))
+    with pytest.raises(ServiceTokenError):
+        await service_auth.token()
+
+
+# --- JWKS: fetched from the Keycloak issuer ---------------------------------
+
+
+def _jwks_endpoint(seen: list, *jwks: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"keys": list(jwks)})
+
+    return _client(handler)
+
+
+def _issuer_token(key, kid: str) -> str:
+    return _signed_token_with_kid(
+        key, kid=kid, issuer=_AUTH.issuer, audience=_AUTH.audience, subject="u", exp=10_000_000_000
+    )
+
+
+async def test_jwks_is_fetched_from_the_issuer_once():
+    key, jwk = _rsa_jwk("k1")
+    seen: list[httpx.Request] = []
+    auth = JwtAuthAdapter(_AUTH)
+    auth.set_client(_jwks_endpoint(seen, jwk))
+
+    assert (await auth.authenticate(_issuer_token(key, "k1"))).subject == "u"
+    assert (await auth.authenticate(_issuer_token(key, "k1"))).subject == "u"
+    assert [str(r.url) for r in seen] == ["http://kc/realms/onecx/protocol/openid-connect/certs"]
+
+
+async def test_unknown_kid_refetches_the_jwks_for_key_rotation(monkeypatch):
+    monkeypatch.setattr(auth_module, "_JWKS_MIN_REFETCH_SECONDS", 0)
+    old_key, old_jwk = _rsa_jwk("old")
+    new_key, new_jwk = _rsa_jwk("new")
+    auth = JwtAuthAdapter(_AUTH)
+    auth.set_client(_jwks_endpoint([], old_jwk))
+    await auth.authenticate(_issuer_token(old_key, "old"))
+
+    auth.set_client(_jwks_endpoint([], old_jwk, new_jwk))
+    assert (await auth.authenticate(_issuer_token(new_key, "new"))).subject == "u"
+
+
+async def test_unknown_kids_cannot_force_repeated_jwks_fetches():
+    key, jwk = _rsa_jwk("k1")
+    seen: list[httpx.Request] = []
+    auth = JwtAuthAdapter(_AUTH)
+    auth.set_client(_jwks_endpoint(seen, jwk))
+    await auth.authenticate(_issuer_token(key, "k1"))
+    for kid in ("bogus-1", "bogus-2"):
+        with pytest.raises(AuthenticationError):
+            await auth.authenticate(_issuer_token(key, kid))
+    assert len(seen) == 1
+
+
+async def test_unreachable_jwks_rejects_the_token():
+    key, _ = _rsa_jwk("k1")
+    auth = JwtAuthAdapter(_AUTH)
+    auth.set_client(_client(lambda _req: httpx.Response(503)))
+    with pytest.raises(AuthenticationError):
+        await auth.authenticate(_issuer_token(key, "k1"))
+
+
+# --- mcp: Streamable HTTP against the agent's servers ----------------------
+
+
+class _Hosts(httpx.AsyncBaseTransport):
+    """Route requests by host and record them."""
+
+    def __init__(self, routes: dict[str, httpx.AsyncBaseTransport]) -> None:
+        self._routes = routes
+        self.requests: list[httpx.Request] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return await self._routes[request.url.host].handle_async_request(request)
+
+
+@asynccontextmanager
+async def _mcp_servers():
+    """An in-process MCP server on 127.0.0.1 plus an unreachable one; same task as the test."""
+    server = FastMCP("crm", stateless_http=True, json_response=True)
+
+    @server.tool(description="Read a CRM record")
+    def read(record_id: str) -> str:
+        return f"record {record_id}"
+
+    @server.tool(description="Always fails")
+    def fail() -> str:
+        raise ValueError("boom")
+
+    transport = _Hosts(
+        {
+            "127.0.0.1": httpx.ASGITransport(app=server.streamable_http_app()),
+            "down.example": httpx.MockTransport(lambda _req: httpx.Response(503)),
+        }
+    )
+    async with server.session_manager.run():
+        yield transport
+
+
+_CRM = McpServerSnapshot(name="crm", url="http://127.0.0.1:8000/mcp")
+_DOWN = McpServerSnapshot(name="down", url="http://down.example/mcp")
+
+
+def _mcp(transport) -> HttpMcpAdapter:
+    mcp = HttpMcpAdapter()
+    mcp.set_transport(transport)
+    return mcp
+
+
+async def test_mcp_discovers_tools_and_reports_failed_servers():
+    async with _mcp_servers() as transport:
+        discovery = await _mcp(transport).discover([_CRM, _DOWN], "tok")
+
+    assert [(t.server_name, t.tool_name, t.tool_description) for t in discovery.tools] == [
+        ("crm", "read", "Read a CRM record"),
+        ("crm", "fail", "Always fails"),
+    ]
+    assert [name for name, _ in discovery.degraded] == ["down"]
+    assert "503" in discovery.degraded[0][1]
+    assert all(r.headers["apm-principal-token"] == "tok" for r in transport.requests)
+    assert all("authorization" not in r.headers for r in transport.requests)
+
+
+async def test_mcp_invokes_a_tool():
+    proposal = ToolProposal(proposal_id="p1", tool_name="read", arguments={"record_id": "42"})
+    async with _mcp_servers() as transport:
+        result = await _mcp(transport).invoke(_CRM, proposal, "tok")
+    assert result.ok is True
+    assert "record 42" in str(result.value)
+
+
+async def test_mcp_tool_error_is_a_sanitized_failure():
+    proposal = ToolProposal(proposal_id="p1", tool_name="fail")
+    async with _mcp_servers() as transport:
+        result = await _mcp(transport).invoke(_CRM, proposal, "tok")
+    assert result.ok is False
+    assert "boom" in result.error
+
+
+async def test_mcp_unreachable_server_is_a_sanitized_failure():
+    proposal = ToolProposal(proposal_id="p1", tool_name="read")
+    async with _mcp_servers() as transport:
+        result = await _mcp(transport).invoke(_DOWN, proposal, "tok")
+    assert result.ok is False
+    assert "503" in result.error
+
+
+# --- permission: onecx-permission-svc POST /internal/permissions/me --------
+
+_VOICE = {"appId": "onecx-ai-ui", "productName": "onecx-ai", "resource": "VOICE", "action": "USE"}
+_OTHER = {"appId": "onecx-ai-ui", "productName": "onecx-ai", "resource": "CHAT", "action": "USE"}
+
+
+def _permission_adapter(pages: list[list[dict]], seen: list | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request)
+        page = json.loads(request.content)["pageNumber"]
+        return httpx.Response(200, json={"stream": pages[page], "totalPages": len(pages)})
+
+    perm = HttpPermissionAdapter(PermissionSettings(base_url="http://perm"))
+    perm.set_client(_client(handler))
+    return perm
+
+
+async def test_voice_permission_found_in_users_permissions():
+    seen: list[httpx.Request] = []
+    perm = _permission_adapter([[_OTHER, _VOICE]], seen)
+    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is True
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == "http://perm/internal/permissions/me"
+    assert seen[0].headers["apm-principal-token"] == "tok"
+    assert json.loads(seen[0].content) == {"token": "tok", "pageNumber": 0, "pageSize": 100}
+
+
+async def test_voice_permission_is_searched_across_pages():
+    perm = _permission_adapter([[_OTHER], [_VOICE]])
+    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is True
+
+
+async def test_missing_voice_permission_is_denied():
+    perm = _permission_adapter([[_OTHER], []])
+    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is False
+
+
+async def test_voice_permission_fails_closed_on_error_status():
+    perm = HttpPermissionAdapter(PermissionSettings(base_url="http://perm"))
+    perm.set_client(_client(lambda _req: httpx.Response(500)))
+    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is False
+
+
+async def test_voice_permission_fails_closed_when_unreachable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    perm = HttpPermissionAdapter(PermissionSettings(base_url="http://perm"))
+    perm.set_client(_client(handler))
+    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is False
+
+
+# --- tool policy: resolved per MCP server by ai-provider -------------------
+
+_POLICY_SNAPSHOT = AgentConfigSnapshot(
+    agent_id="a",
+    schema_version="1",
+    mcp_servers=[
+        McpServerSnapshot(
+            name="crm",
+            url="https://crm.example/mcp",
+            unlisted_tool_permission=PermissionAction.ALWAYS_ALLOW,
+            tool_rules=[ToolRule(tool_name="write", permission=PermissionAction.DENY)],
+        ),
+    ],
+)
+
+
+def test_tool_rule_wins_over_unlisted_policy():
+    tool = AgentToolSnapshot(tool_name="write", server_name="crm")
+    assert resolve_tool_permission(_POLICY_SNAPSHOT, tool) is PermissionAction.DENY
+
+
+def test_unruled_tool_uses_its_servers_unlisted_policy():
+    tool = AgentToolSnapshot(tool_name="read", server_name="crm")
+    assert resolve_tool_permission(_POLICY_SNAPSHOT, tool) is PermissionAction.ALWAYS_ALLOW
+
+
+def test_tool_from_unknown_server_is_denied():
+    tool = AgentToolSnapshot(tool_name="read", server_name="elsewhere")
+    assert resolve_tool_permission(_POLICY_SNAPSHOT, tool) is PermissionAction.DENY
+
+
+def test_allowed_tools_filters_to_always_allow_only():
+    discovered = [
+        AgentToolSnapshot(tool_name="read", server_name="crm"),
+        AgentToolSnapshot(tool_name="write", server_name="crm"),
+        AgentToolSnapshot(tool_name="read", server_name="elsewhere"),
+    ]
+    allowed = allowed_tools(_POLICY_SNAPSHOT, discovered)
+    assert [(t.server_name, t.tool_name) for t in allowed] == [("crm", "read")]
