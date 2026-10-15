@@ -40,15 +40,35 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 
 | `auth.issuer`
 | `https://auth.example`
-| Expected JWT issuer for `InMemoryAuthAdapter`-compatible tokens.
+| Expected JWT issuer, validated by `JwtAuthAdapter` when verifying the
+`apm_principal_token` carried in `start_session`.
 
 | `auth.audience`
 | `onecx-pipecat`
-| Expected JWT audience.
+| Expected JWT audience, validated by `JwtAuthAdapter`.
 
 | `auth.token_claim_subject`
 | `sub`
 | JWT claim name read as the authenticated subject.
+
+| `auth.jwks`
+| (empty)
+| Keycloak JWKS used to verify the `apm_principal_token` carried in
+`start_session` — either the embedded `keys` document as a JSON string or a
+URL the JWT adapter fetches once.
+
+| `auth.client_id`
+| `onecx-pipecat`
+| Client identifier of Pipecat's own OIDC client-credentials grant, used to
+obtain a service token for outbound calls to OneCX services.
+
+| `auth.client_secret`
+| (empty)
+| Client secret for Pipecat's OIDC client-credentials grant.
+
+| `auth.token_endpoint`
+| `https://auth.example/protocol/openid-connect/token`
+| OIDC token endpoint Pipecat exchanges its client credentials against.
 
 | `agent_config.default_agent_id`
 | `onecx-agent`
@@ -57,6 +77,15 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `agent_config.default_snapshot_version`
 | `1`
 | Default snapshot version to pin.
+
+| `agent_config.base_url`
+| `https://agentsvc.example`
+| Base URL of the service exposing
+`GET /v1/agents/{agent_id}/configuration`, pinned once per session.
+
+| `chat.base_url`
+| `https://chat.example`
+| Base URL of onecx-chat-svc, used to load a chat by id as the user.
 
 | `speech.stt_provider`
 | `inmemory`
@@ -82,9 +111,21 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `always_ask`
 | Default `PermissionAction` for tools that do not match a policy.
 
-| `mcp.default_server_url`
+| `permission.base_url`
+| `https://permissions.example`
+| Base URL of onecx-permission-svc, used to check the user's existing voice
+permission through the existing permission interface.
+
+| `mcp.default_server_name`
 | `inmemory`
 | MCP server identifier (in-memory by default).
+
+| `mcp.servers`
+| `{"inmemory": "inmemory"}`
+| Map of MCP server name to endpoint. Non-HTTP endpoints (for example the
+in-memory one) are skipped by `HttpMcpAdapter` during the once-per-session
+tool discovery; a server whose `tools/list` call fails is reported through a
+`degraded_capability` event.
 
 | `mcp.timeout_seconds`
 | `30.0`
@@ -106,17 +147,32 @@ shipped behavior.
   ** `persistence.max_entries_per_session` — the per-session cap that
      `InMemoryPersistence` enforces by evicting the oldest entry when a
      session exceeds it.
-* *Loaded and validated, but not yet read by the in-memory adapters:* every
-  other field in the reference. Each documents the contract a real,
-  non-in-memory adapter honors once it is wired in — for example
-  `auth.issuer` / `auth.audience` / `auth.token_claim_subject` are the JWT
-  fields a real auth adapter validates (the in-memory auth stand-in resolves
-  tokens from a local table rather than parsing JWTs), `speech.*` the
-  speech-backend knobs, `agent_config.*` the default pin,
-  `persistence.backend` / `mcp.default_server_url` the backend selectors, and
-  `mcp.timeout_seconds` the per-invocation timeout. These fields are
-  placeholders reserved for real adapter implementations, not consumed by the
-  in-memory ones.
+* *Read by the HTTP / JWT adapters:*
+  ** `auth.issuer`, `auth.audience`, and `auth.token_claim_subject` — the
+     claim fields `JwtAuthAdapter` validates when it verifies the
+     `apm_principal_token` carried in `start_session` against `auth.jwks`
+     (signature, issuer, and expiry).
+  ** `agent_config.base_url` — the base URL `HttpAgentConfigAdapter` calls
+     (`GET /v1/agents/{agent_id}/configuration`) to pin the agent
+     configuration once per session.
+  ** `chat.base_url` — the base URL `HttpChatAdapter` calls to load a chat by
+     id as the user.
+
+  The in-memory auth stand-in (`InMemoryAuthAdapter`) resolves tokens from a
+  local table rather than parsing JWTs, so it does not read `auth.jwks`,
+  `auth.issuer`, `auth.audience`, or `auth.token_claim_subject`.
+
+* *Loaded and validated, but not yet read by the shipped adapters:*
+  `speech.*` (the speech-backend knobs), `agent_config.default_agent_id` and
+  `agent_config.default_snapshot_version` (the default pin),
+  `persistence.backend` (the backend selector), `mcp.*` (the server
+  selectors and the per-invocation timeout), `permission.base_url` (the base
+  URL a real permission adapter would call to check the user's voice
+  permission — the in-memory permission adapter resolves that in-process), and
+  the `auth.client_id` / `auth.client_secret` / `auth.token_endpoint` OIDC
+  knobs (used only when a real auth adapter must obtain its own service token).
+  These fields are placeholders reserved for real adapter implementations, not
+  consumed by the shipped in-memory / HTTP ones.
 
 == Precedence
 

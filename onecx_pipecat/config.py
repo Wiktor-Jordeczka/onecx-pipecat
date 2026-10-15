@@ -18,6 +18,15 @@ class AuthSettings(BaseSettings):
     issuer: str = "https://auth.example"
     audience: str = "onecx-pipecat"
     token_claim_subject: str = "sub"
+    # Keycloak JWKS (embedded JSON or a URL the adapter fetches once) used to
+    # verify ``apm-principal-token`` signature, issuer and expiry.
+    jwks: str = ""
+    # Pipecat's own OIDC client credentials, used to authenticate outbound
+    # calls to OneCX services the way a BFF does (apm-principal-token is also
+    # propagated to act as the user).
+    client_id: str = "onecx-pipecat"
+    client_secret: str = ""
+    token_endpoint: str = "https://auth.example/protocol/openid-connect/token"
 
 
 class AgentConfigSettings(BaseSettings):
@@ -25,6 +34,15 @@ class AgentConfigSettings(BaseSettings):
 
     default_agent_id: str = "onecx-agent"
     default_snapshot_version: int = 1
+    # Base URL of the service exposing ``GET /v1/agents/{agent_id}/configuration``.
+    base_url: str = "https://agentsvc.example"
+
+
+class ChatSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ONECX_CHAT__")
+
+    # Base URL of onecx-chat-svc, used to load a chat by id as the user.
+    base_url: str = "https://chat.example"
 
 
 class SpeechSettings(BaseSettings):
@@ -46,6 +64,9 @@ class PermissionSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERMISSION__")
 
     default_action: str = "always_ask"
+    # Base URL of onecx-permission-svc, used to check the user's existing voice
+    # permission through the existing permission interface.
+    base_url: str = "https://permissions.example"
 
 
 class McpSettings(BaseSettings):
@@ -73,6 +94,7 @@ class Settings(BaseSettings):
 
     auth: AuthSettings = Field(default_factory=AuthSettings)
     agent_config: AgentConfigSettings = Field(default_factory=AgentConfigSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
     speech: SpeechSettings = Field(default_factory=SpeechSettings)
     persistence: PersistenceSettings = Field(default_factory=PersistenceSettings)
     permission: PermissionSettings = Field(default_factory=PermissionSettings)

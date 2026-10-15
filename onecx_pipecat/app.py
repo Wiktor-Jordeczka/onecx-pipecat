@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.protocol import ErrorEvent, decode_command
 from onecx_pipecat.session import SessionState, VoiceSession
@@ -39,15 +38,14 @@ def create_app(container: AppContainer) -> FastAPI:
 
     @app.websocket("/ws/voice")
     async def voice(websocket: WebSocket) -> None:
-        token = websocket.query_params.get("token", "")
-        try:
-            principal = await container.auth.authenticate(token)
-        except AuthenticationError:
+        # Tokens belong in the first message, not the URL. A connection that
+        # still tries to carry a token in the query string is rejected.
+        if websocket.query_params.get("token"):
             await websocket.close(code=_WS_POLICY_VIOLATION)
             return
 
         await websocket.accept()
-        session = VoiceSession(uuid4().hex, principal, container)
+        session = VoiceSession(uuid4().hex, container)
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -57,6 +55,8 @@ def create_app(container: AppContainer) -> FastAPI:
                     payload = None
                 command = decode_command(payload) if isinstance(payload, dict) else None
                 if command is None:
+                    # The first message must be a valid ``start_session``; an
+                    # invalid or unknown command is reported and ignored.
                     await websocket.send_json(
                         ErrorEvent(code="bad_command", message="malformed command").model_dump()
                     )

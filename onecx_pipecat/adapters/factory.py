@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from onecx_pipecat.adapters.agent_config import InMemoryAgentConfigAdapter
 from onecx_pipecat.adapters.auth import InMemoryAuthAdapter
+from onecx_pipecat.adapters.chat import InMemoryChatAdapter
 from onecx_pipecat.adapters.mcp import InMemoryMcpAdapter
 from onecx_pipecat.adapters.permission import InMemoryPermissionAdapter
 from onecx_pipecat.adapters.persistence import InMemoryPersistence
@@ -22,6 +23,10 @@ def build_auth(settings: Settings):
 
 def build_agent_config(settings: Settings):
     return InMemoryAgentConfigAdapter(settings.agent_config)
+
+
+def build_chat(settings: Settings):
+    return InMemoryChatAdapter(settings.chat)
 
 
 def build_stt(settings: Settings):

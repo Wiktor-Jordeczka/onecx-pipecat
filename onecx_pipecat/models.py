@@ -21,14 +21,42 @@ class Principal(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+class PermissionAction(StrEnum):
+    """Canonical OneCX permission vocabulary.
+
+    ``ALWAYS_ALLOW`` is the only action a voice session may execute a tool
+    with; ``ALWAYS_ASK`` and ``DENY`` tools are not advertised or invokable.
+    """
+
+    DENY = "DENY"
+    ALWAYS_ASK = "ALWAYS_ASK"
+    ALWAYS_ALLOW = "ALWAYS_ALLOW"
+
+
+class ExecutionPolicy(StrEnum):
+    """Server-level default policy for a tool connection (provider-svc ``ExecutionPolicy``)."""
+
+    DENY = "DENY"
+    ALWAYS_ASK = "ALWAYS_ASK"
+    ALWAYS_ALLOW = "ALWAYS_ALLOW"
+
+
 class AgentConfigSnapshot(BaseModel):
-    """A pinned agent configuration version for one run."""
+    """A pinned agent configuration version for one voice session.
+
+    The payload is fetched once at session start and pinned for the whole
+    session; configuration changes apply to the next session. ``voice_enabled``
+    is a gate on the agent itself and ``unlisted_tool_permission`` is the
+    resolved policy for discovered tools that have no explicit rule.
+    """
 
     agent_id: str
     version: int
     system_prompt: str = ""
     tool_names: list[str] = Field(default_factory=list)
     tools: list[AgentToolSnapshot] = Field(default_factory=list)
+    unlisted_tool_permission: PermissionAction = PermissionAction.ALWAYS_ASK
+    voice_enabled: bool = True
 
 
 class AgentToolSnapshot(BaseModel):
@@ -39,7 +67,7 @@ class AgentToolSnapshot(BaseModel):
     tool_description: str = ""
     server_name: str = "inmemory"
     server_url: str = "inmemory"
-    execution_policy: ExecutionPolicy = "ALWAYS_ASK"
+    execution_policy: ExecutionPolicy = ExecutionPolicy.ALWAYS_ASK
     allowed: PermissionAction | None = None
 
 
@@ -61,24 +89,11 @@ class VoiceEntry(BaseModel):
     idempotency_key: str | None = None
 
 
-class PermissionAction(StrEnum):
-    ALLOW = "ALLOW"
-    DENY = "DENY"
-    ALWAYS_ASK = "ALWAYS_ASK"
-
-
 class PermissionDecision(BaseModel):
     """The result of a permission evaluation for a tool call."""
 
     action: PermissionAction
     reason: str = ""
-
-
-class ExecutionPolicy(StrEnum):
-    """Server-level default policy for a tool connection (provider-svc ``ExecutionPolicy``)."""
-
-    ALWAYS_ASK = "ALWAYS_ASK"
-    NEVER_ASK = "NEVER_ASK"
 
 
 class AgentMcpToolRule(BaseModel):

@@ -10,6 +10,7 @@ def test_container_binds_inmemory_adapters_by_default():
     s = c.adapters()
     assert s.auth == "InMemoryAuthAdapter"
     assert s.agent_config == "InMemoryAgentConfigAdapter"
+    assert s.chat == "InMemoryChatAdapter"
     assert s.stt == "InMemorySttAdapter"
     assert s.tts == "InMemoryTtsAdapter"
     assert s.persistence == "InMemoryPersistence"

@@ -37,6 +37,23 @@ def test_permission_decision_carries_action():
     assert "write" in d.reason
 
 
+def test_permission_action_uses_canonical_vocabulary():
+    assert [a.value for a in PermissionAction] == ["DENY", "ALWAYS_ASK", "ALWAYS_ALLOW"]
+    # The legacy ALLOW / NEVER_ASK values are gone.
+    assert not hasattr(PermissionAction, "ALLOW")
+    assert not hasattr(ExecutionPolicy, "NEVER_ASK")
+
+
+def test_execution_policy_uses_canonical_vocabulary():
+    assert [p.value for p in ExecutionPolicy] == ["DENY", "ALWAYS_ASK", "ALWAYS_ALLOW"]
+
+
+def test_agent_config_snapshot_defaults_voice_enabled_and_unlisted_permission():
+    s = AgentConfigSnapshot(agent_id="a", version=3)
+    assert s.voice_enabled is True
+    assert s.unlisted_tool_permission is PermissionAction.ALWAYS_ASK
+
+
 def test_agent_config_snapshot_is_pinned():
     s = AgentConfigSnapshot(
         agent_id="a",

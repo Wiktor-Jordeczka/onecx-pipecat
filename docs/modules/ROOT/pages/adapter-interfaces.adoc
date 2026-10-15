@@ -1,32 +1,82 @@
 = Adapter interfaces
 
-The application composes six replaceable adapters. Each capability is a
-`typing.Protocol` in `onecx_pipecat/adapters/` and ships with an
-in-memory implementation that is safe to construct with zero cloud
-credentials. Swapping a capability means writing a new class that
-satisfies the same `Protocol` and pointing the corresponding factory
-function in `onecx_pipecat/adapters/factory.py` at it.
+The application composes a set of replaceable adapters. Each capability is a
+`typing.Protocol` in `onecx_pipecat/adapters/` and ships with an in-memory
+implementation that is safe to construct with zero cloud credentials. Swapping
+a capability means writing a new class that satisfies the same `Protocol` and
+pointing the corresponding factory function in
+`onecx_pipecat/adapters/factory.py` at it.
 
 == Authentication
 
-* Protocol: `AuthAdapter.authenticate(token) -> Principal`
+* Protocol: `AuthAdapter` — `authenticate(apm_principal_token) -> Principal`,
+  `is_expired(token) -> bool`, `refresh(token) -> Principal`,
+  `service_token() -> str`
 * In-memory: `InMemoryAuthAdapter`
+* JWT: `JwtAuthAdapter`
 
-Raise `AuthenticationError` for tokens that are not in the local table.
-`seed(token, subject, tenant_id, roles)` is a test-only convenience. The
-in-memory stand-in resolves a token against a local table rather than parsing
-JWTs, so the `auth.issuer`, `auth.audience`, and `auth.token_claim_subject`
-settings are not read here — they are the fields a real (non-in-memory) auth
-adapter validates.
+The `apm_principal_token` is the OneCX token the client carries in the
+`start_session` command. `authenticate` resolves it to a `Principal`;
+`is_expired` reports whether a token whose session is already open has since
+expired (driving `token_expired`); `refresh` resolves a fresh token
+presented by a `refresh_token` command; `service_token` returns a token the
+application itself uses for outbound service calls (a BFF-style
+client-credentials grant in a real deployment).
+
+`InMemoryAuthAdapter.authenticate` raises `AuthenticationError` for tokens
+that are not in the local table or that have been marked expired.
+`seed(token, subject, tenant_id, roles, expired=False)` is a test-only
+convenience; `mark_expired(token)` flips the state a session uses to detect
+mid-session expiry, and `set_service_token(token)` overrides the default
+`service_token`.
+
+`JwtAuthAdapter` verifies the token against a Keycloak JWKS. `set_jwks(jwks)`
+accepts an embedded `{"keys": [...]}` document (as a JSON string or dict), a
+bare list of JWKs, or a single JWK. `authenticate` decodes the token with
+RS256, checking signature, `issuer`, and `audience`; `is_expired` decodes
+without re-verifying expiry and reports whether `exp` is in the past.
+A real deployment points `auth.jwks` at the Keycloak JWKS URL.
 
 == Agent Configuration
 
-* Protocol: `AgentConfigAdapter.pin(tenant_id, agent_id) -> AgentConfigSnapshot`
+* Protocol: `AgentConfigAdapter.pin(tenant_id, agent_id,
+  apm_principal_token) -> AgentConfigSnapshot`
 * In-memory: `InMemoryAgentConfigAdapter`
+* HTTP: `HttpAgentConfigAdapter`
 
-Returns the highest-registered `version` for the (tenant, agent) pair.
-`register(tenant_id, agent_id, version, system_prompt, tool_names)` seeds
-the table.
+The snapshot is pinned **once**, when the session starts, and is not re-read
+for the lifetime of the session. `pin` resolves the agent configuration for
+the user identified by the propagated `apm_principal_token` and fails closed
+with `AgentConfigError` when voice is disabled (`voice.enabled` is false), the
+configuration is invalid or conflicting, or the agent service is unreachable.
+The pinned snapshot carries the tool policy defaults and the
+`unlisted_tool_permission` fallback used when a discovered tool matches no
+explicit rule.
+
+`InMemoryAgentConfigAdapter.register(tenant_id, agent_id, version,
+system_prompt, tool_names, unlisted_tool_permission=ALWAYS_ASK,
+voice_enabled=True)` seeds the table; a snapshot registered with
+`voice_enabled=False` raises `AgentConfigError` from `pin`. `pin` returns the
+highest-registered `version` for the (tenant, agent) pair.
+
+`HttpAgentConfigAdapter` calls
+`GET {agent_config.base_url}/v1/agents/{agent_id}/configuration` with the
+`apm-principal-token` header and raises `AgentConfigError` on `404`, `409`, or
+an unreachable endpoint.
+
+== Chat Access
+
+* Protocol: `ChatAdapter.load(chat_id, apm_principal_token) -> Chat`
+* In-memory: `InMemoryChatAdapter`
+* HTTP: `HttpChatAdapter`
+
+Loads a chat by id **as the user** identified by the propagated token, so the
+chat service enforces the caller's own access. Raises `ChatAccessError` when
+the user cannot access the chat; the session fails closed with
+`chat_not_accessible`. `InMemoryChatAdapter.register(chat_id, title)` seeds
+the table; an unknown id raises `ChatAccessError`. `HttpChatAdapter` calls
+`GET {chat.base_url}/v1/chats/{chat_id}` with the `apm-principal-token` header
+and raises `ChatAccessError` on `403`, `404`, or an unreachable endpoint.
 
 == Speech
 
@@ -34,8 +84,8 @@ the table.
   `TtsAdapter.synthesize(text) -> bytes`
 * In-memory: `InMemorySttAdapter`, `InMemoryTtsAdapter`
 
-Deterministic; the STT returns a fixed transcript for non-empty input and
-the TTS returns UTF-8 bytes of the input text.
+Deterministic; the STT returns a fixed transcript for non-empty input and the
+TTS returns UTF-8 bytes of the input text.
 
 == Persistence
 
@@ -50,30 +100,50 @@ session exceeds the cap.
 
 == Permission
 
-* Protocol: `PermissionAdapter.evaluate(proposal) -> PermissionDecision`
+* Protocol: `PermissionAdapter` —
+  `has_voice_permission(principal, apm_principal_token) -> bool`,
+  `allowed_tools(snapshot, discovered) -> list[AgentToolSnapshot]`,
+  `evaluate(proposal) -> PermissionDecision`
 * In-memory: `InMemoryPermissionAdapter`
 
-Policy is data, not a name heuristic. The adapter resolves a decision in the
-same order provider-svc intends:
+Policy is data, not a name heuristic. Actions use the canonical vocabulary
+`DENY`, `ALWAYS_ASK`, and `ALWAYS_ALLOW` (the legacy `ALLOW` / `NEVER_ASK`
+spellings are removed). The in-memory adapter resolves a single tool's action
+in this order:
 
-. An exact per-agent rule for the tool (`AgentMcpToolRule.allowed`, one of
-`ALLOW`, `DENY`, `ALWAYS_ASK`).
-. The tool connection's server default (`ExecutionPolicy`); legacy `NEVER_ASK`
-maps to `ALLOW`, `ALWAYS_ASK` stays `ALWAYS_ASK`.
-. The operator's global `permission.default_action` (the default is
-`always_ask`).
+. An exact per-agent rule for the tool (`set_rule(tool_name, allowed)`).
+. The tool's pinned `allowed` value from the agent configuration snapshot.
+. The snapshot's `unlisted_tool_permission` fallback.
 
-The in-memory stand-in accepts rules through `set_rule(tool_name, allowed)` and
-a server default through `set_server_default(policy)`; a real adapter reads both
-from the pinned Agent Configuration snapshot.
+`allowed_tools` returns only the discovered tools that resolve to
+`ALWAYS_ALLOW`; those are the tools the session advertises to the assistant,
+and a tool that resolves to `DENY` or `ALWAYS_ASK` is withheld.
+`has_voice_permission` reports whether the user already has the OneCX voice
+permission; `set_voice_permission(subject, allowed)` seeds it in the in-memory
+stand-in, and a real adapter checks it through the existing permission
+interface.
 
 == MCP
 
-* Protocol: `McpAdapter.invoke(proposal, args) -> McpToolResult`
+* Protocol: `McpAdapter` — `discover(apm_principal_token) -> McpDiscovery`,
+  `invoke(proposal, args) -> McpToolResult`
 * In-memory: `InMemoryMcpAdapter`
+* HTTP: `HttpMcpAdapter`
 
-Unknown tools return a sanitized `McpToolResult(ok=False, error=...)` so
-the assistant can reason over the failure shape — the same contract the
-`MCP_FAILURE` branch in the prototype exercises. The in-memory stand-in
-does not enforce `mcp.timeout_seconds` around a handler; that is the
-per-invocation timeout a real (non-in-memory) MCP adapter applies.
+Tools are **discovered once**, when the session starts, and the token is
+propagated to each server. `discover` returns an `McpDiscovery` carrying the
+resolved tools and a list of `(server_name, reason)` pairs for servers that
+could not be reached; a failing server is skipped and surfaced to the session
+as a `degraded_capability` event rather than aborting the session.
+
+`invoke` runs a single tool. Unknown tools return a sanitized
+`McpToolResult(ok=False, error=...)` so the assistant can reason over the
+failure shape — the same contract the `MCP_FAILURE` branch in the prototype
+exercises. `InMemoryMcpAdapter` takes handlers through
+`set_handler(tool_name, callable)` and `mark_degraded(server_name, reason)`
+for tests; it does not enforce `mcp.timeout_seconds` around a handler — that
+is the per-invocation timeout a real (non-in-memory) MCP adapter applies.
+`HttpMcpAdapter` takes servers through `set_servers(name -> url)`, POSTs
+`{url}/tools/list` with the `apm-principal-token` header during `discover`
+(skipping non-HTTP endpoints), and reports failed servers in the
+`degraded` list.
