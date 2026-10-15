@@ -1,0 +1,224 @@
+{
+  ".claude/settings.json": {
+    "mtime": 1792065554.143929,
+    "seen": 1792065583.4206288,
+    "ast_hash": "c3fec0ec1f482710ce893e7dcef9214b",
+    "semantic_hash": ""
+  },
+  ".githooks/pre-commit": {
+    "mtime": 1790318849.902203,
+    "seen": 1792065583.4206326,
+    "ast_hash": "f16bb95f24e8860548a023d0e9193b2f",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/__init__.py": {
+    "mtime": 1790317812.8445158,
+    "seen": 1792065583.420634,
+    "ast_hash": "7c565cf8438ad6916a85f5334c911382",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/__init__.py": {
+    "mtime": 1792065524.4489613,
+    "seen": 1792065583.4206345,
+    "ast_hash": "09c899b72b821186640e7f116351da29",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/agent_config.py": {
+    "mtime": 1792065524.4489613,
+    "seen": 1792065583.4206352,
+    "ast_hash": "b01422c5b84ea2d459b3309537bfbdd6",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/auth.py": {
+    "mtime": 1792065524.4494035,
+    "seen": 1792065583.4206357,
+    "ast_hash": "a5472b6ac9ca5fca5700c46e605b82cb",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/chat.py": {
+    "mtime": 1792065524.4504037,
+    "seen": 1792065583.4206362,
+    "ast_hash": "ca696b3711b8b2a2b5bbde798c5ab1ad",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/factory.py": {
+    "mtime": 1792065524.4504747,
+    "seen": 1792065583.4206367,
+    "ast_hash": "698f847296ab07f2999a1cd5cef447b7",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/mcp.py": {
+    "mtime": 1792065524.4510355,
+    "seen": 1792065583.4206371,
+    "ast_hash": "c74a640b659d1d3010edf4491de37153",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/permission.py": {
+    "mtime": 1792065524.4511175,
+    "seen": 1792065583.4206376,
+    "ast_hash": "399a4860d303294b1305ce40f8803b42",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/persistence.py": {
+    "mtime": 1790317812.8447819,
+    "seen": 1792065583.4206383,
+    "ast_hash": "1fd2a3f0c091e1f29937f19599c9519d",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/adapters/speech.py": {
+    "mtime": 1790317812.8447819,
+    "seen": 1792065583.4206388,
+    "ast_hash": "ba3685522420a7a9171322cf33e5c8ed",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/app.py": {
+    "mtime": 1792065524.4511805,
+    "seen": 1792065583.4206393,
+    "ast_hash": "0ec786cad36c265117e81232936fca8b",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/config.py": {
+    "mtime": 1792065524.4515135,
+    "seen": 1792065583.4206395,
+    "ast_hash": "0afd8b22aa3e0affab18259947dccac8",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/container.py": {
+    "mtime": 1792065524.4515717,
+    "seen": 1792065583.42064,
+    "ast_hash": "13861bcc4080850f54ee786d16f62160",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/main.py": {
+    "mtime": 1790317812.8447819,
+    "seen": 1792065583.4206405,
+    "ast_hash": "7d7acc3b7a60d2efecb857b82ea6f204",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/models.py": {
+    "mtime": 1792065524.4515717,
+    "seen": 1792065583.4206407,
+    "ast_hash": "bde474d1f393eaccd1acb0babaa1b7d7",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/protocol.py": {
+    "mtime": 1792065524.4515717,
+    "seen": 1792065583.4206412,
+    "ast_hash": "1222ca55122d86e86aca0c9a79210bd3",
+    "semantic_hash": ""
+  },
+  "onecx_pipecat/session.py": {
+    "mtime": 1792065524.4515717,
+    "seen": 1792065583.4206421,
+    "ast_hash": "77f17594a7771f7851eb5e0738d52fce",
+    "semantic_hash": ""
+  },
+  "pyproject.toml": {
+    "mtime": 1792065524.4515717,
+    "seen": 1792065583.4206426,
+    "ast_hash": "ea9f1bdb85f50b384311c6d0513c0a21",
+    "semantic_hash": ""
+  },
+  "tests/test_adapters.py": {
+    "mtime": 1792065524.4524965,
+    "seen": 1792065583.4206429,
+    "ast_hash": "ac123879f9b1cc2a3c68a5eb7e2e3a60",
+    "semantic_hash": ""
+  },
+  "tests/test_app.py": {
+    "mtime": 1790317812.8457897,
+    "seen": 1792065583.4206433,
+    "ast_hash": "9ed592a192eaa4f35bee7b488d209484",
+    "semantic_hash": ""
+  },
+  "tests/test_config.py": {
+    "mtime": 1792065524.4528522,
+    "seen": 1792065583.420644,
+    "ast_hash": "7e5d68309bb185606df8ce62efd245d2",
+    "semantic_hash": ""
+  },
+  "tests/test_container.py": {
+    "mtime": 1792065524.4529088,
+    "seen": 1792065583.4206443,
+    "ast_hash": "5b9355e270475027f73691d1ba8bd222",
+    "semantic_hash": ""
+  },
+  "tests/test_factory.py": {
+    "mtime": 1792065524.4529614,
+    "seen": 1792065583.4206448,
+    "ast_hash": "b372dfedb8b1aff03fbd3ae44fcd283d",
+    "semantic_hash": ""
+  },
+  "tests/test_main.py": {
+    "mtime": 1790317812.8457897,
+    "seen": 1792065583.4206455,
+    "ast_hash": "3678170bda2ceac40a31527e34d8b572",
+    "semantic_hash": ""
+  },
+  "tests/test_models.py": {
+    "mtime": 1792065524.4533384,
+    "seen": 1792065583.420646,
+    "ast_hash": "6d6d9824867ada93cdd9186ecce2c4b7",
+    "semantic_hash": ""
+  },
+  "tests/test_session.py": {
+    "mtime": 1792065524.4533384,
+    "seen": 1792065583.4206462,
+    "ast_hash": "19c2a50548cde0b08740cdc0c22854be",
+    "semantic_hash": ""
+  },
+  "tests/test_ws.py": {
+    "mtime": 1792065524.4533384,
+    "seen": 1792065583.4206467,
+    "ast_hash": "4dcaea42bc304cc1ec6d55497efe90f4",
+    "semantic_hash": ""
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1790318576.9938998,
+    "seen": 1792065583.420647,
+    "ast_hash": "af472cd8690e9dd0097b343fcc659365",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1792065554.1435926,
+    "seen": 1792065583.4206474,
+    "ast_hash": "82efb97a359f5c7290bf2513d14686be",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1790318854.3990283,
+    "seen": 1792065583.4206479,
+    "ast_hash": "b9be3abb8ecc49d9d897ff02841e57f5",
+    "semantic_hash": ""
+  },
+  "ai-provider-internal.yaml": {
+    "mtime": 1790318301.49871,
+    "seen": 1792065583.420648,
+    "ast_hash": "1bf247fb5e9200a41f2b68dfa855d883",
+    "semantic_hash": ""
+  },
+  "antora-playbook.yml": {
+    "mtime": 1790317812.8434885,
+    "seen": 1792065583.4206488,
+    "ast_hash": "cfda2b9f484ecf386b67746657663382",
+    "semantic_hash": ""
+  },
+  "docs/antora.yml": {
+    "mtime": 1790317812.8434885,
+    "seen": 1792065583.420649,
+    "ast_hash": "4569d39e1b679b65199f507fe31bb04b",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-09-08-pipecat-application-foundation.md": {
+    "mtime": 1790317812.8445158,
+    "seen": 1792065583.4206495,
+    "ast_hash": "47fff40c5a03b0fe7c8b0bfda87f1ea1",
+    "semantic_hash": ""
+  },
+  "prototypes/voice-turn-sequence-prototype.html": {
+    "mtime": 1790317812.8447819,
+    "seen": 1792065583.42065,
+    "ast_hash": "22f9c1621535d315cb975517785a3c39",
+    "semantic_hash": ""
+  }
+}

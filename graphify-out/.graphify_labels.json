@@ -1,0 +1,22 @@
+{
+  "0": "test_adapters.py",
+  "1": "Settings",
+  "2": "InMemoryMcpAdapter",
+  "3": "adapters/__init__.py",
+  "4": "VoiceSession",
+  "5": "test_session.py",
+  "6": "chat.py",
+  "7": "InMemoryPermissionAdapter",
+  "8": "AgentToolSnapshot",
+  "9": "Principal",
+  "10": "create_app",
+  "11": "VoiceEntry",
+  "12": "permission.py",
+  "13": "PermissionAction",
+  "14": "HttpAgentConfigAdapter",
+  "15": "models.py",
+  "16": "CLAUDE.md",
+  "17": "pre-commit",
+  "18": "onecx_pipecat/__init__.py",
+  "19": "onecx-pipecat"
+}
