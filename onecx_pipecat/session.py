@@ -20,6 +20,7 @@ from enum import StrEnum
 from onecx_pipecat.adapters.agent_config import AgentConfigError
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.chat import Chat, ChatAccessError
+from onecx_pipecat.adapters.mcp import propagated_headers
 from onecx_pipecat.adapters.permission import allowed_tools
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
@@ -151,8 +152,10 @@ class VoiceSession:
             return [ErrorEvent(code="config_unavailable", message=str(exc))]
         self._snapshot = snapshot
 
-        # 5. Discover tools once on the agent's own MCP servers, propagating the token.
-        discovery = await self._container.mcp.discover(snapshot.mcp_servers, apm_principal_token)
+        # 5. Discover tools once on the agent's own MCP servers, forwarding the user's tokens.
+        discovery = await self._container.mcp.discover(
+            snapshot.mcp_servers, propagated_headers(apm_principal_token, authorization)
+        )
 
         # 6. Advertise only tools the pinned configuration resolves to ALWAYS_ALLOW.
         self._allowed_tools = allowed_tools(snapshot, discovery.tools)

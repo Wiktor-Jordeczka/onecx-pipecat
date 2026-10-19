@@ -128,13 +128,15 @@ def _snapshot_with_servers() -> AgentConfigSnapshot:
     )
 
 
-async def test_discovery_uses_the_agents_servers_and_token():
+async def test_discovery_uses_the_agents_servers_and_forwards_user_tokens():
     """MCP servers come from the pinned agent configuration, not global settings."""
     container = _container()
     container.agent_config.register(_snapshot_with_servers())
     session = _session(container)
-    await session.dispatch(_start())
-    assert container.mcp.calls == [(["crm", "docs"], "tok-user")]
+    await session.dispatch(_start(authorization="Bearer user"))
+    assert container.mcp.calls == [
+        (["crm", "docs"], {"apm-principal-token": "tok-user", "UserAuthorization": "Bearer user"})
+    ]
 
 
 async def test_start_filters_to_always_allow_tools_only():

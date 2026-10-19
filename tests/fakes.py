@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -93,12 +94,12 @@ class FakeMcp:
     def __init__(self) -> None:
         self.tools: dict[str, list[str]] = {}
         self.failures: dict[str, str] = {}
-        self.calls: list[tuple[list[str], str]] = []
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
 
     async def discover(
-        self, servers: list[McpServerSnapshot], apm_principal_token: str
+        self, servers: list[McpServerSnapshot], headers: Mapping[str, str]
     ) -> McpDiscovery:
-        self.calls.append(([s.name for s in servers], apm_principal_token))
+        self.calls.append(([s.name for s in servers], dict(headers)))
         discovery = McpDiscovery()
         for server in servers:
             if server.name in self.failures:
@@ -116,7 +117,7 @@ class FakeMcp:
         self,
         server: McpServerSnapshot,
         proposal: ToolProposal,
-        apm_principal_token: str,
+        headers: Mapping[str, str],
         args: dict[str, Any] | None = None,
     ) -> McpToolResult:
         return McpToolResult(ok=False, error="not implemented")

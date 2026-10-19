@@ -24,6 +24,7 @@ from onecx_pipecat.adapters.auth import (
     ServiceTokenError,
 )
 from onecx_pipecat.adapters.chat import ChatAccessError
+from onecx_pipecat.adapters.mcp import propagated_headers
 from onecx_pipecat.adapters.permission import allowed_tools, resolve_tool_permission
 from onecx_pipecat.config import (
     AgentConfigSettings,
@@ -597,9 +598,17 @@ def _mcp(transport) -> HttpMcpAdapter:
     return mcp
 
 
+_USER_HEADERS = propagated_headers("tok", "Bearer user")
+
+
+async def test_propagated_headers_mirror_the_runtime():
+    assert _USER_HEADERS == {"apm-principal-token": "tok", "UserAuthorization": "Bearer user"}
+    assert propagated_headers("tok", "  ") == {"apm-principal-token": "tok"}
+
+
 async def test_mcp_discovers_tools_and_reports_failed_servers():
     async with _mcp_servers() as transport:
-        discovery = await _mcp(transport).discover([_CRM, _DOWN], "tok")
+        discovery = await _mcp(transport).discover([_CRM, _DOWN], _USER_HEADERS)
 
     assert [(t.server_name, t.tool_name, t.tool_description) for t in discovery.tools] == [
         ("crm", "read", "Read a CRM record"),
@@ -607,14 +616,16 @@ async def test_mcp_discovers_tools_and_reports_failed_servers():
     ]
     assert [name for name, _ in discovery.degraded] == ["down"]
     assert "503" in discovery.degraded[0][1]
-    assert all(r.headers["apm-principal-token"] == "tok" for r in transport.requests)
-    assert all("authorization" not in r.headers for r in transport.requests)
+    for request in transport.requests:
+        assert request.headers["apm-principal-token"] == "tok"
+        assert request.headers["UserAuthorization"] == "Bearer user"
+        assert "authorization" not in request.headers
 
 
 async def test_mcp_invokes_a_tool():
     proposal = ToolProposal(proposal_id="p1", tool_name="read", arguments={"record_id": "42"})
     async with _mcp_servers() as transport:
-        result = await _mcp(transport).invoke(_CRM, proposal, "tok")
+        result = await _mcp(transport).invoke(_CRM, proposal, _USER_HEADERS)
     assert result.ok is True
     assert "record 42" in str(result.value)
 
@@ -622,7 +633,7 @@ async def test_mcp_invokes_a_tool():
 async def test_mcp_tool_error_is_a_sanitized_failure():
     proposal = ToolProposal(proposal_id="p1", tool_name="fail")
     async with _mcp_servers() as transport:
-        result = await _mcp(transport).invoke(_CRM, proposal, "tok")
+        result = await _mcp(transport).invoke(_CRM, proposal, _USER_HEADERS)
     assert result.ok is False
     assert "boom" in result.error
 
@@ -630,52 +641,51 @@ async def test_mcp_tool_error_is_a_sanitized_failure():
 async def test_mcp_unreachable_server_is_a_sanitized_failure():
     proposal = ToolProposal(proposal_id="p1", tool_name="read")
     async with _mcp_servers() as transport:
-        result = await _mcp(transport).invoke(_DOWN, proposal, "tok")
+        result = await _mcp(transport).invoke(_DOWN, proposal, _USER_HEADERS)
     assert result.ok is False
     assert "503" in result.error
 
 
-# --- permission: onecx-permission-svc POST /internal/permissions/me --------
-
-_VOICE = {"appId": "onecx-ai-ui", "productName": "onecx-ai", "resource": "VOICE", "action": "USE"}
-_OTHER = {"appId": "onecx-ai-ui", "productName": "onecx-ai", "resource": "CHAT", "action": "USE"}
+# --- permission: onecx-permission v1 POST /v1/permissions/user/{product}/{app} ---
 
 
-def _permission_adapter(pages: list[list[dict]], seen: list | None = None):
+def _permission_adapter(status: int, body: dict | None = None, seen: list | None = None):
     def handler(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
-        page = json.loads(request.content)["pageNumber"]
-        return httpx.Response(200, json={"stream": pages[page], "totalPages": len(pages)})
+        return httpx.Response(status, json=body)
 
     perm = HttpPermissionAdapter(PermissionSettings(base_url="http://perm"))
     perm.set_client(_client(handler))
     return perm
 
 
-async def test_voice_permission_found_in_users_permissions():
+def _app_permissions(permissions: dict) -> dict:
+    return {"appId": "onecx-ai-ui", "productName": "onecx-ai", "permissions": permissions}
+
+
+async def test_voice_permission_found_in_application_permissions():
     seen: list[httpx.Request] = []
-    perm = _permission_adapter([[_OTHER, _VOICE]], seen)
+    body = _app_permissions({"CHAT": ["USE"], "VOICE": ["VIEW", "USE"]})
+    perm = _permission_adapter(200, body, seen)
     assert await perm.has_voice_permission(_PRINCIPAL, "tok") is True
     assert seen[0].method == "POST"
-    assert str(seen[0].url) == "http://perm/internal/permissions/me"
+    assert str(seen[0].url) == "http://perm/v1/permissions/user/onecx-ai/onecx-ai-ui"
     assert seen[0].headers["apm-principal-token"] == "tok"
-    assert json.loads(seen[0].content) == {"token": "tok", "pageNumber": 0, "pageSize": 100}
+    assert json.loads(seen[0].content) == {"token": "tok"}
 
 
-async def test_voice_permission_is_searched_across_pages():
-    perm = _permission_adapter([[_OTHER], [_VOICE]])
-    assert await perm.has_voice_permission(_PRINCIPAL, "tok") is True
-
-
-async def test_missing_voice_permission_is_denied():
-    perm = _permission_adapter([[_OTHER], []])
+@pytest.mark.parametrize(
+    "permissions", [{}, {"CHAT": ["USE"]}, {"VOICE": ["VIEW"]}, {"VOICE": None}]
+)
+async def test_missing_voice_permission_is_denied(permissions):
+    perm = _permission_adapter(200, _app_permissions(permissions))
     assert await perm.has_voice_permission(_PRINCIPAL, "tok") is False
 
 
-async def test_voice_permission_fails_closed_on_error_status():
-    perm = HttpPermissionAdapter(PermissionSettings(base_url="http://perm"))
-    perm.set_client(_client(lambda _req: httpx.Response(500)))
+@pytest.mark.parametrize("status", [400, 401, 500])
+async def test_voice_permission_fails_closed_on_error_status(status):
+    perm = _permission_adapter(status, {"errorCode": "x"})
     assert await perm.has_voice_permission(_PRINCIPAL, "tok") is False
 
 

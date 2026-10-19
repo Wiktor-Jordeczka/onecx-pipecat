@@ -8,7 +8,7 @@ any server that fails, so the session continues in a degraded state.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -44,17 +44,31 @@ class McpDiscovery:
     degraded: list[tuple[str, str]] = field(default_factory=list)
 
 
+def propagated_headers(apm_principal_token: str, authorization: str = "") -> dict[str, str]:
+    """The user headers forwarded to MCP servers, as onecx-ai-provider-runtime does.
+
+    The user's ``Authorization`` travels as ``UserAuthorization`` so it never
+    collides with a server's own ``Authorization``.
+    """
+    headers: dict[str, str] = {}
+    if apm_principal_token.strip():
+        headers["apm-principal-token"] = apm_principal_token
+    if authorization.strip():
+        headers["UserAuthorization"] = authorization
+    return headers
+
+
 class McpAdapter(Protocol):
     async def invoke(
         self,
         server: McpServerSnapshot,
         proposal: ToolProposal,
-        apm_principal_token: str,
+        headers: Mapping[str, str],
         args: dict[str, Any] | None = None,
     ) -> McpToolResult: ...
 
     async def discover(
-        self, servers: list[McpServerSnapshot], apm_principal_token: str
+        self, servers: list[McpServerSnapshot], headers: Mapping[str, str]
     ) -> McpDiscovery:
         """Discover tools once, across the given servers, skipping failures."""
         ...
@@ -63,9 +77,9 @@ class McpAdapter(Protocol):
 class HttpMcpAdapter:
     """Talk to the agent's MCP servers over MCP Streamable HTTP (official ``mcp`` SDK).
 
-    Each call opens a session (``initialize``), propagating the principal token
-    and applying ``mcp.timeout_seconds``. A server that fails discovery is
-    captured as a degraded entry so the remaining servers still complete.
+    Each call opens a session (``initialize``), sending the propagated user
+    headers and applying ``mcp.timeout_seconds``. A server that fails discovery
+    is captured as a degraded entry so the remaining servers still complete.
     """
 
     def __init__(self, settings: McpSettings | None = None) -> None:
@@ -78,10 +92,10 @@ class HttpMcpAdapter:
 
     @asynccontextmanager
     async def _session(
-        self, server: McpServerSnapshot, apm_principal_token: str
+        self, server: McpServerSnapshot, headers: Mapping[str, str]
     ) -> AsyncIterator[ClientSession]:
         async with httpx.AsyncClient(
-            headers={"apm-principal-token": apm_principal_token},
+            headers=dict(headers),
             timeout=self._settings.timeout_seconds,
             follow_redirects=True,
             transport=self._transport,
@@ -96,12 +110,12 @@ class HttpMcpAdapter:
                     yield session
 
     async def discover(
-        self, servers: list[McpServerSnapshot], apm_principal_token: str
+        self, servers: list[McpServerSnapshot], headers: Mapping[str, str]
     ) -> McpDiscovery:
         discovery = McpDiscovery()
         for server in servers:
             try:
-                tools = await self._list_tools(server, apm_principal_token)
+                tools = await self._list_tools(server, headers)
             except Exception as exc:  # noqa: BLE001 - any server failure degrades, never aborts
                 discovery.degraded.append((server.name, _reason(exc)))
                 continue
@@ -109,10 +123,10 @@ class HttpMcpAdapter:
         return discovery
 
     async def _list_tools(
-        self, server: McpServerSnapshot, apm_principal_token: str
+        self, server: McpServerSnapshot, headers: Mapping[str, str]
     ) -> list[AgentToolSnapshot]:
         tools: list[AgentToolSnapshot] = []
-        async with self._session(server, apm_principal_token) as session:
+        async with self._session(server, headers) as session:
             cursor: str | None = None
             while True:
                 page = await session.list_tools(cursor)
@@ -133,12 +147,12 @@ class HttpMcpAdapter:
         self,
         server: McpServerSnapshot,
         proposal: ToolProposal,
-        apm_principal_token: str,
+        headers: Mapping[str, str],
         args: dict[str, Any] | None = None,
     ) -> McpToolResult:
         arguments = dict(args if args is not None else proposal.arguments)
         try:
-            async with self._session(server, apm_principal_token) as session:
+            async with self._session(server, headers) as session:
                 result = await session.call_tool(proposal.tool_name, arguments)
         except Exception as exc:  # noqa: BLE001 - sanitized boundary
             return McpToolResult(ok=False, error=_reason(exc))

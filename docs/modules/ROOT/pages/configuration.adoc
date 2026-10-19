@@ -114,11 +114,16 @@ permission services (never to MCP servers).
 | `permission.base_url`
 | `http://onecx-permission-svc:8080`
 | Base URL of onecx-permission-svc; `HttpPermissionAdapter` calls
-`POST /internal/permissions/me` to check the user's voice permission.
+`POST /v1/permissions/user/{productName}/{appId}` to check the user's voice
+permission.
 
 | `permission.voice_product_name`
 | `onecx-ai`
-| `productName` of the OneCX permission that grants voice.
+| `productName` of the application that owns the voice permission.
+
+| `permission.voice_app_id`
+| `onecx-ai-ui`
+| `appId` of the application that owns the voice permission.
 
 | `permission.voice_resource`
 | `VOICE`
@@ -127,10 +132,6 @@ permission services (never to MCP servers).
 | `permission.voice_action`
 | `USE`
 | `action` of the OneCX permission that grants voice.
-
-| `permission.page_size`
-| `100`
-| Page size used while searching the user's permissions.
 
 | `mcp.timeout_seconds`
 | `30.0`

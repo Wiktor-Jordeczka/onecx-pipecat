@@ -103,12 +103,13 @@ session exceeds the cap.
 * Tool policy: `resolve_tool_permission(snapshot, tool)`,
   `allowed_tools(snapshot, discovered)` (pure functions)
 
-`HttpPermissionAdapter` asks onecx-permission-svc
-`POST {permission.base_url}/internal/permissions/me` with
-`{"token": <apm-principal-token>, "pageNumber", "pageSize"}` and pages
-through the user's permissions until one matches
-`permission.voice_product_name`, `permission.voice_resource`, and
-`permission.voice_action`. Any error status or unreachable endpoint fails
+`HttpPermissionAdapter` uses the same public API as the OneCX permissions
+Quarkus extension:
+`POST {permission.base_url}/v1/permissions/user/{voice_product_name}/{voice_app_id}`
+with `{"token": <apm-principal-token>}`. permission-svc resolves the user's
+roles from the token and returns `{"permissions": {resource: [actions]}}`;
+voice is granted when `permission.voice_action` is listed under
+`permission.voice_resource`. Any error status or unreachable endpoint fails
 closed (no voice permission).
 
 Tool policy is data resolved by ai-provider, not by Pipecat. Actions use the
@@ -125,15 +126,18 @@ discovered tool, `resolve_tool_permission` uses:
 == MCP
 
 * Protocol: `McpAdapter` —
-  `discover(servers, apm_principal_token) -> McpDiscovery`,
-  `invoke(server, proposal, apm_principal_token, args) -> McpToolResult`
+  `discover(servers, headers) -> McpDiscovery`,
+  `invoke(server, proposal, headers, args) -> McpToolResult`
 * Implementation: `HttpMcpAdapter` (official `mcp` SDK, MCP Streamable HTTP)
 
 MCP servers are **per agent**: the session passes the pinned snapshot's
 `mcp_servers` (from `mcpServers[].url`) to `discover`; nothing is configured
 globally except `mcp.timeout_seconds`. Each call opens an MCP session
-(`initialize`) with the `apm-principal-token` header; Pipecat's service token
-is never sent to MCP servers. `discover` pages through `tools/list` once per
+(`initialize`) with the user headers from `propagated_headers`, matching
+onecx-ai-provider-runtime: `apm-principal-token`, and the user's
+`Authorization` from `start_session` forwarded as `UserAuthorization`.
+Pipecat's service token is never sent to MCP servers. `discover` pages through
+`tools/list` once per
 session start and returns an `McpDiscovery` with the tools and a list of
 `(server_name, reason)` pairs for servers that failed; a failing server is
 surfaced as a `degraded_capability` event rather than aborting the session.

@@ -64,13 +64,14 @@ class PersistenceSettings(BaseSettings):
 class PermissionSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERMISSION__")
 
-    # Base URL of onecx-permission-svc (``POST /internal/permissions/me``).
+    # Base URL of onecx-permission-svc (``POST /v1/permissions/user/{productName}/{appId}``).
     base_url: str = "http://onecx-permission-svc:8080"
-    # The OneCX permission that grants voice; a user needs one entry matching all three.
+    # The OneCX permission that grants voice: ``voice_action`` on ``voice_resource``
+    # of application ``voice_app_id`` in product ``voice_product_name``.
     voice_product_name: str = "onecx-ai"
+    voice_app_id: str = "onecx-ai-ui"
     voice_resource: str = "VOICE"
     voice_action: str = "USE"
-    page_size: int = 100
 
 
 class McpSettings(BaseSettings):

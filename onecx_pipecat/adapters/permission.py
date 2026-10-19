@@ -3,7 +3,8 @@
 Two distinct concerns:
 
 * ``PermissionAdapter`` asks onecx-permission-svc whether the user already
-  holds the OneCX voice permission (``POST /internal/permissions/me``).
+  holds the OneCX voice permission, through the same v1 API the OneCX
+  permissions extension uses (``POST /v1/permissions/user/{productName}/{appId}``).
 * ``resolve_tool_permission`` / ``allowed_tools`` apply the per-tool policy
   ai-provider already resolved into the pinned agent configuration; only
   ``ALWAYS_ALLOW`` tools are advertised.
@@ -31,10 +32,10 @@ class PermissionAdapter(Protocol):
 
 
 class HttpPermissionAdapter:
-    """Check the voice permission via onecx-permission-svc ``POST /internal/permissions/me``.
+    """Check the voice permission via ``POST /v1/permissions/user/{productName}/{appId}``.
 
-    The user's permissions are resolved from ``apm-principal-token`` and paged
-    through until the configured voice permission is found. Any error fails
+    permission-svc resolves the user's roles from the ``token`` and returns the
+    application's permissions as ``{resource: [actions]}``. Any error fails
     closed (no voice permission).
     """
 
@@ -50,45 +51,24 @@ class HttpPermissionAdapter:
         self._client = client
 
     async def has_voice_permission(self, principal: Principal, apm_principal_token: str) -> bool:
+        s = self._settings
         client = self._client or httpx.AsyncClient()
         try:
-            return await self._search(client, apm_principal_token)
-        except (httpx.HTTPError, ValueError):
+            response = await client.post(
+                f"{s.base_url}/v1/permissions/user/{s.voice_product_name}/{s.voice_app_id}",
+                headers={"apm-principal-token": apm_principal_token},
+                auth=self._service_auth,
+                json={"token": apm_principal_token},
+            )
+            if not response.is_success:
+                return False
+            permissions: dict[str, Any] = response.json().get("permissions") or {}
+        except (httpx.HTTPError, ValueError, AttributeError):
             return False
         finally:
             if self._client is None:
                 await client.aclose()
-
-    async def _search(self, client: httpx.AsyncClient, apm_principal_token: str) -> bool:
-        url = f"{self._settings.base_url}/internal/permissions/me"
-        headers = {"apm-principal-token": apm_principal_token}
-        page = 0
-        while True:
-            response = await client.post(
-                url,
-                headers=headers,
-                auth=self._service_auth,
-                json={
-                    "token": apm_principal_token,
-                    "pageNumber": page,
-                    "pageSize": self._settings.page_size,
-                },
-            )
-            if not response.is_success:
-                return False
-            body: dict[str, Any] = response.json()
-            if any(self._is_voice(p) for p in body.get("stream") or []):
-                return True
-            page += 1
-            if page >= int(body.get("totalPages") or 0):
-                return False
-
-    def _is_voice(self, permission: dict[str, Any]) -> bool:
-        return (
-            permission.get("productName") == self._settings.voice_product_name
-            and permission.get("resource") == self._settings.voice_resource
-            and permission.get("action") == self._settings.voice_action
-        )
+        return s.voice_action in (permissions.get(s.voice_resource) or [])
 
 
 def resolve_tool_permission(
