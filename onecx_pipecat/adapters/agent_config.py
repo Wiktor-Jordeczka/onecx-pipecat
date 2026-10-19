@@ -10,6 +10,7 @@ voice session must not start without a usable configuration.
 from __future__ import annotations
 
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -64,7 +65,7 @@ class HttpAgentConfigAdapter:
         try:
             try:
                 response = await client.get(
-                    f"{self._settings.base_url}/v1/agents/{agent_id}/configuration",
+                    f"{self._settings.base_url}/v1/agents/{quote(agent_id, safe='')}/configuration",
                     headers=headers,
                     auth=self._service_auth,
                 )
@@ -76,26 +77,40 @@ class HttpAgentConfigAdapter:
                 raise AgentConfigError(f"configuration for agent={agent_id} is invalid")
             if not response.is_success:
                 raise AgentConfigError(f"agent configuration error: {response.status_code}")
-            body: dict[str, Any] = response.json()
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise AgentConfigError(
+                    f"agent configuration for agent={agent_id} is not valid JSON"
+                ) from exc
             return _parse_configuration(body, agent_id)
         finally:
             if client is not self._client:
                 await client.aclose()
 
 
-def _parse_configuration(body: dict[str, Any], agent_id: str) -> AgentConfigSnapshot:
+def _section(body: dict[str, Any], key: str, agent_id: str) -> dict[str, Any]:
+    value = body.get(key) or {}
+    if not isinstance(value, dict):
+        raise AgentConfigError(f"invalid {key!r} section for agent={agent_id}")
+    return value
+
+
+def _parse_configuration(body: Any, agent_id: str) -> AgentConfigSnapshot:
     """Turn an ``AgentConfiguration`` payload into a snapshot, enforcing voiceEnabled."""
-    voice = body.get("voice") or {}
+    if not isinstance(body, dict):
+        raise AgentConfigError(f"invalid configuration for agent={agent_id}")
+    voice = _section(body, "voice", agent_id)
     if voice.get("voiceEnabled") is not True:
         raise AgentConfigError(f"voice disabled for agent={agent_id}")
 
     try:
         servers = [_parse_mcp_server(entry) for entry in body.get("mcpServers") or []]
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise AgentConfigError(f"invalid MCP server configuration for agent={agent_id}") from exc
 
-    agent = body.get("agent") or {}
-    scaffold = body.get("scaffold") or {}
+    agent = _section(body, "agent", agent_id)
+    scaffold = _section(body, "scaffold", agent_id)
     return AgentConfigSnapshot(
         agent_id=str(agent.get("id") or agent_id),
         schema_version=str(body.get("schemaVersion", "")),

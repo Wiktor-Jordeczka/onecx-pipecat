@@ -1,0 +1,113 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="component-overview" name="Component overview">
+    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1250" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="OneCX Pipecat: component overview" style="text;html=1;fontSize=16;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="20" y="10" width="400" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="client" value="Browser / client" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="20" y="300" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="app" value="HTTP + WebSocket app&lt;br&gt;(health, voice endpoint, expiry watcher)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="190" y="295" width="160" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="session" value="Voice session&lt;br&gt;(state machine)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="300" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="container" value="Adapter container&lt;br&gt;(composition root)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="590" y="300" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="settings" value="Typed settings&lt;br&gt;(environment variables)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="590" y="440" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="protocol" value="Protocol: typed commands / events&lt;br&gt;(transport-neutral)" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="290" y="210" width="170" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a-auth" value="Authentication" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="100" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-chat" value="Chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="170" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-perm" value="Permission" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="240" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-cfg" value="Agent configuration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="310" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-mcp" value="MCP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="380" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-speech" value="Speech (STT / TTS)&lt;br&gt;in-memory fakes" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="450" width="140" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="a-store" value="Persistence&lt;br&gt;in-memory" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="800" y="520" width="140" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="x-kc" value="Keycloak (JWKS)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="90" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-chat" value="onecx-chat-svc" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="160" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-perm" value="onecx-permission-svc" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="230" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-cfg" value="onecx-ai-provider-svc" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="300" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-mcp" value="Per-agent MCP servers" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="370" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-speech" value="Future STT / TTS vendors" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;dashed=1;fillColor=#ffffff;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="440" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="x-store" value="Future durable store" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;dashed=1;fillColor=#ffffff;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="510" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="commands / events&lt;br&gt;(WebSocket)" style="endArrow=classic;startArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="client" target="app">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="endArrow=classic;startArrow=classic;html=1;" edge="1" parent="1" source="app" target="session">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="endArrow=classic;html=1;" edge="1" parent="1" source="session" target="container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="configures" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="settings" target="container">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="endArrow=none;dashed=1;html=1;" edge="1" parent="1" source="protocol" target="session">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="c1" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-auth"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c2" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-chat"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c3" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-perm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c4" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-cfg"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c5" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-mcp"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c6" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-speech"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c7" style="endArrow=classic;html=1;" edge="1" parent="1" source="container" target="a-store"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="d1" style="endArrow=classic;html=1;" edge="1" parent="1" source="a-auth" target="x-kc"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d2" style="endArrow=classic;html=1;" edge="1" parent="1" source="a-chat" target="x-chat"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d3" style="endArrow=classic;html=1;" edge="1" parent="1" source="a-perm" target="x-perm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d4" style="endArrow=classic;html=1;" edge="1" parent="1" source="a-cfg" target="x-cfg"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d5" style="endArrow=classic;html=1;" edge="1" parent="1" source="a-mcp" target="x-mcp"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d6" style="endArrow=classic;dashed=1;html=1;" edge="1" parent="1" source="a-speech" target="x-speech"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d7" style="endArrow=classic;dashed=1;html=1;" edge="1" parent="1" source="a-store" target="x-store"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="legend" value="Solid: real OneCX boundary (no in-memory fallback). Dashed: in-memory placeholder." style="text;html=1;fontSize=11;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="20" y="620" width="560" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

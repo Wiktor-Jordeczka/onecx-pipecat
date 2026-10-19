@@ -31,6 +31,41 @@ def test_ws_rejects_token_in_url():
             ws.receive_json()
 
 
+@pytest.mark.parametrize(
+    "query", ["token=t-1", "apm-principal-token=t-1", "access_token=t-1", "authorization=x", "a=b"]
+)
+def test_ws_rejects_any_query_parameter(query):
+    client = TestClient(create_app(_container()))
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/ws/voice?{query}") as ws:
+            ws.receive_json()
+
+
+def test_ws_failed_start_sends_error_then_closes_with_policy_violation():
+    client = TestClient(create_app(_container()))
+    with client.websocket_connect("/ws/voice") as ws:
+        ws.send_json(_start(token="nope"))
+        assert ws.receive_json()["code"] == "authentication_failed"
+        assert ws.receive_json()["kind"] == "session_closed"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 1008
+
+
+def test_ws_idle_session_is_ended_at_token_expiry():
+    container = _container()
+    client = TestClient(create_app(container, expiry_check_seconds=0.05))
+    with client.websocket_connect("/ws/voice") as ws:
+        ws.send_json(_start())
+        assert ws.receive_json()["kind"] == "session_ready"
+        container.auth.mark_expired("t-1")
+        assert ws.receive_json()["code"] == "token_expired"
+        assert ws.receive_json()["kind"] == "session_closed"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 1008
+
+
 def test_ws_start_session_with_invalid_token_reports_error():
     client = TestClient(create_app(_container()))
     with client.websocket_connect("/ws/voice") as ws:

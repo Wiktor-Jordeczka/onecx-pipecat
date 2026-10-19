@@ -19,13 +19,16 @@ chat service.
 . The user's existing voice permission is checked.
 . The agent configuration for `agent_id` is pinned for the whole session.
 
-Every step fails closed: an invalid or expired token, a chat the user cannot
-access, a missing voice permission, or an unpinnable agent configuration closes
-or rejects the session with a typed `error` event rather than proceeding.
+Every step fails closed: an invalid or expired token, a chat the user is
+neither the owner of nor a participant in, a missing voice permission, or an
+unpinnable agent configuration sends a typed `error` event followed by
+`session_closed` (reason `start_failed`), then closes the connection with code
+`1008`. A failed start leaves no session state behind and cannot be retried on
+the same connection.
 
-The legacy query-string form (`?token=...`) is no longer accepted. A
-connection that presents a `token` query parameter is closed with code `1008`
-before it is accepted.
+The legacy query-string form (`?token=...`) is no longer accepted, and the
+endpoint takes no query parameters at all. A connection that presents any
+query parameter is closed with code `1008` before it is accepted.
 
 == Commands
 
@@ -79,7 +82,10 @@ The `error` event carries one of the following `code` values:
 * `config_unavailable` — the agent configuration could not be pinned (voice
 disabled, conflict, or the agent service unreachable).
 * `token_expired` — the session token expired mid-session; the session is
-closed.
+closed. Expiry is checked on every command and periodically while idle.
+* `principal_mismatch` — a `refresh_token` carried a token for a different
+subject or tenant than the user who started the session; the token is not
+applied.
 * `illegal_state` — a command arrived in the wrong state (audio before
 `start_session`, a second `start_session`, or a `refresh_token`/audio after
 the session closed).
@@ -87,7 +93,7 @@ the session closed).
 == Behavior
 
 * Starting a session without valid configuration fails closed with an `error`
-of code `config_unavailable`; the session stays unstarted.
+of code `config_unavailable`; the session is closed.
 * Audio before `start_session`, or a second `start_session`, is rejected with
 an `error` of code `illegal_state`.
 * Only finalized transcripts are persisted. Empty, noise-only input stays
@@ -101,9 +107,13 @@ token is propagated to each MCP server. A server that fails is skipped, and a
 `degraded_capability` event is emitted for it; the session continues with the
 tools that resolved successfully.
 * Only tools whose execution policy resolves to `ALWAYS_ALLOW` are advertised
-to the assistant. Tools that resolve to `ALWAYS_ASK` or `DENY` are withheld.
+to the assistant. Tools that resolve to `ALWAYS_ASK` or `DENY` are withheld and
+`VoiceSession.invoke_tool` refuses to invoke them. MCP redirects are not
+followed, so the user's token is never forwarded to another host.
 * The agent configuration is pinned once at `start_session` and is not
 re-read for the lifetime of the session.
-* A `refresh_token` command swaps in a new token after authentication. An
+* A `refresh_token` command swaps in a new token after authentication. The
+token must belong to the same subject and tenant as the session's user,
+otherwise it is rejected with `principal_mismatch`. An
 expired token ends the session with an `error` of code `token_expired` and a
 `session_closed` event.

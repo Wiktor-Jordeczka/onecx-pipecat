@@ -97,7 +97,9 @@ class HttpMcpAdapter:
         async with httpx.AsyncClient(
             headers=dict(headers),
             timeout=self._settings.timeout_seconds,
-            follow_redirects=True,
+            # Never follow redirects: custom headers (the user's apm-principal-token)
+            # would be forwarded to whichever host the server redirects to.
+            follow_redirects=False,
             transport=self._transport,
         ) as http_client:
             async with streamable_http_client(server.url, http_client=http_client) as (

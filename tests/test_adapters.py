@@ -405,6 +405,42 @@ async def test_agent_config_server_without_url_is_invalid():
         await _pin(200, body)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        ["not", "a", "dict"],
+        {**_AGENT_CONFIGURATION, "voice": "yes"},
+        {**_AGENT_CONFIGURATION, "agent": ["x"]},
+        {**_AGENT_CONFIGURATION, "scaffold": "x"},
+        {**_AGENT_CONFIGURATION, "mcpServers": ["not-a-dict"]},
+        {**_AGENT_CONFIGURATION, "mcpServers": 3},
+    ],
+)
+async def test_agent_config_malformed_body_fails_closed(body):
+    with pytest.raises(AgentConfigError):
+        await _pin(200, body)
+
+
+async def test_agent_config_non_json_body_fails_closed():
+    adapter = HttpAgentConfigAdapter(AgentConfigSettings(base_url="http://ai"))
+    adapter.set_client(_client(lambda _req: httpx.Response(200, content=b"<html>")))
+    with pytest.raises(AgentConfigError):
+        await adapter.pin("local", "agent-1", "tok")
+
+
+async def test_agent_id_is_escaped_in_the_url_path():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_AGENT_CONFIGURATION)
+
+    adapter = HttpAgentConfigAdapter(AgentConfigSettings(base_url="http://ai"))
+    adapter.set_client(_client(handler))
+    await adapter.pin("local", "a/b?c#d", "tok")
+    assert seen[0].url.raw_path == b"/v1/agents/a%2Fb%3Fc%23d/configuration"
+
+
 # --- chat: onecx-chat-svc GET /internal/chats/{id} -------------------------
 
 
@@ -430,6 +466,61 @@ async def test_chat_error_status_raises_access_error(status):
     chat.set_client(_client(lambda _req: httpx.Response(status)))
     with pytest.raises(ChatAccessError):
         await chat.load("c1", "tok")
+
+
+async def test_chat_exposes_owner_and_participants():
+    body = {
+        "id": "c1",
+        "userId": "owner",
+        "participants": [{"userId": "guest"}, {"userName": "no-id"}],
+    }
+    chat = HttpChatAdapter(ChatSettings(base_url="http://chat"))
+    chat.set_client(_client(lambda _req: httpx.Response(200, json=body)))
+    loaded = await chat.load("c1", "tok")
+    assert loaded.user_ids == frozenset({"owner", "guest"})
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"<html>"),
+        httpx.Response(200, json=["not", "a", "dict"]),
+        httpx.Response(200, json={"participants": "nope"}),
+    ],
+)
+async def test_chat_malformed_body_raises_access_error(response):
+    chat = HttpChatAdapter(ChatSettings(base_url="http://chat"))
+    chat.set_client(_client(lambda _req: response))
+    with pytest.raises(ChatAccessError):
+        await chat.load("c1", "tok")
+
+
+async def test_chat_id_is_escaped_in_the_url_path():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "x"})
+
+    chat = HttpChatAdapter(ChatSettings(base_url="http://chat"))
+    chat.set_client(_client(handler))
+    await chat.load("a/b?c#d", "tok")
+    assert seen[0].url.raw_path == b"/internal/chats/a%2Fb%3Fc%23d"
+
+
+async def test_chat_closes_its_own_client_on_error_paths(monkeypatch):
+    clients: list[httpx.AsyncClient] = []
+    real_client = httpx.AsyncClient
+
+    def factory() -> httpx.AsyncClient:
+        client = real_client(transport=httpx.MockTransport(lambda _req: httpx.Response(500)))
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("onecx_pipecat.adapters.chat.httpx.AsyncClient", factory)
+    with pytest.raises(ChatAccessError):
+        await HttpChatAdapter(ChatSettings(base_url="http://chat")).load("c1", "tok")
+    assert clients[0].is_closed
 
 
 # --- service token: OIDC client credentials --------------------------------
@@ -644,6 +735,26 @@ async def test_mcp_unreachable_server_is_a_sanitized_failure():
         result = await _mcp(transport).invoke(_DOWN, proposal, _USER_HEADERS)
     assert result.ok is False
     assert "503" in result.error
+
+
+async def test_mcp_does_not_follow_redirects_with_the_user_token():
+    evil_requests: list[httpx.Request] = []
+
+    def evil(request: httpx.Request) -> httpx.Response:
+        evil_requests.append(request)
+        return httpx.Response(200, json={})
+
+    transport = _Hosts(
+        {
+            "127.0.0.1": httpx.MockTransport(
+                lambda _req: httpx.Response(307, headers={"location": "http://evil.example/mcp"})
+            ),
+            "evil.example": httpx.MockTransport(evil),
+        }
+    )
+    discovery = await _mcp(transport).discover([_CRM], _USER_HEADERS)
+    assert [name for name, _ in discovery.degraded] == ["crm"]
+    assert evil_requests == []
 
 
 # --- permission: onecx-permission v1 POST /v1/permissions/user/{product}/{app} ---

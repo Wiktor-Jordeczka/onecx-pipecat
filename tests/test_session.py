@@ -26,6 +26,17 @@ def _session(container: AppContainer) -> VoiceSession:
     return VoiceSession("sess-1", container)
 
 
+def _assert_start_rejected(session: VoiceSession, events: list, code: str) -> None:
+    """A failed start closes the session and drops any half-established state."""
+    assert [e.kind for e in events] == ["error", "session_closed"]
+    assert events[0].code == code
+    assert session.state is SessionState.CLOSED
+    assert session.start_failed
+    assert session.principal is None
+    assert session.snapshot is None
+    assert session.apm_principal_token == ""
+
+
 async def test_start_becomes_ready_with_pinned_configuration():
     session = _session(_container())
     events = await session.dispatch(_start())
@@ -40,17 +51,13 @@ async def test_start_without_configuration_fails_closed():
     container.agent_config = FakeAgentConfig()
     session = _session(container)
     events = await session.dispatch(_start())
-    assert session.state is SessionState.CREATED
-    assert events[0].kind == "error"
-    assert events[0].code == "config_unavailable"
+    _assert_start_rejected(session, events, "config_unavailable")
 
 
 async def test_start_with_unknown_token_fails_authentication():
     session = _session(_container())
     events = await session.dispatch(_start(apm_principal_token="nope"))
-    assert session.state is SessionState.CREATED
-    assert events[0].kind == "error"
-    assert events[0].code == "authentication_failed"
+    _assert_start_rejected(session, events, "authentication_failed")
 
 
 async def test_start_with_expired_token_fails_authentication():
@@ -58,16 +65,21 @@ async def test_start_with_expired_token_fails_authentication():
     container.auth.mark_expired("tok-user")
     session = _session(container)
     events = await session.dispatch(_start())
-    assert session.state is SessionState.CREATED
-    assert events[0].code == "authentication_failed"
+    _assert_start_rejected(session, events, "authentication_failed")
 
 
 async def test_start_with_unknown_chat_fails():
     session = _session(_container())
     events = await session.dispatch(_start(chat_id="missing"))
-    assert session.state is SessionState.CREATED
-    assert events[0].kind == "error"
-    assert events[0].code == "chat_not_accessible"
+    _assert_start_rejected(session, events, "chat_not_accessible")
+
+
+async def test_start_in_a_chat_of_another_user_fails():
+    container = _container()
+    container.chat.register("chat-2", users=("someone-else",))
+    session = _session(container)
+    events = await session.dispatch(_start(chat_id="chat-2"))
+    _assert_start_rejected(session, events, "chat_not_accessible")
 
 
 async def test_start_without_voice_permission_fails():
@@ -75,9 +87,7 @@ async def test_start_without_voice_permission_fails():
     container.permission.deny_voice("user-1")
     session = _session(container)
     events = await session.dispatch(_start())
-    assert session.state is SessionState.CREATED
-    assert events[0].kind == "error"
-    assert events[0].code == "voice_not_permitted"
+    _assert_start_rejected(session, events, "voice_not_permitted")
 
 
 async def test_start_verifies_token_from_message_not_url():
@@ -176,6 +186,19 @@ async def test_refresh_replaces_session_tokens():
     assert session.apm_principal_token == "tok-new"
 
 
+async def test_refresh_for_a_different_user_is_rejected():
+    container = _container()
+    container.auth.seed("tok-other", subject="user-2", tenant_id="local")
+    container.auth.seed("tok-tenant", subject="user-1", tenant_id="other-tenant")
+    session = _session(container)
+    await session.dispatch(_start())
+    for token in ("tok-other", "tok-tenant"):
+        events = await session.dispatch(RefreshToken(apm_principal_token=token))
+        assert events[0].code == "principal_mismatch"
+    assert session.apm_principal_token == "tok-user"
+    assert session.principal is not None and session.principal.subject == "user-1"
+
+
 async def test_refresh_with_invalid_token_fails():
     session = _session(_container())
     await session.dispatch(_start())
@@ -199,6 +222,49 @@ async def test_expired_tokens_end_session_with_typed_error():
     assert [e.kind for e in events] == ["error", "session_closed"]
     assert events[0].code == "token_expired"
     assert session.state is SessionState.CLOSED
+
+
+async def test_expiry_is_detected_without_audio():
+    container = _container()
+    session = _session(container)
+    await session.dispatch(_start())
+    assert session.check_expiry() == []
+    container.auth.mark_expired("tok-user")
+    events = session.check_expiry()
+    assert [e.kind for e in events] == ["error", "session_closed"]
+    assert session.state is SessionState.CLOSED
+
+
+async def test_refresh_is_exempt_from_the_expiry_check():
+    container = _container()
+    container.auth.seed("tok-new", subject="user-1", tenant_id="local")
+    session = _session(container)
+    await session.dispatch(_start())
+    container.auth.mark_expired("tok-user")
+    events = await session.dispatch(RefreshToken(apm_principal_token="tok-new"))
+    assert events == []
+    assert session.state is SessionState.READY
+
+
+async def test_only_always_allow_tools_can_be_invoked():
+    container = _container()
+    container.agent_config.register(_snapshot_with_servers())
+    container.mcp.tools = {"crm": ["safe", "asked", "hidden"], "docs": ["read"]}
+    session = _session(container)
+    await session.dispatch(_start())
+
+    allowed = await session.invoke_tool("docs", "read", {"q": "x"})
+    assert allowed.ok
+    for server, tool in [("crm", "asked"), ("crm", "hidden"), ("crm", "unknown"), ("nope", "x")]:
+        denied = await session.invoke_tool(server, tool)
+        assert not denied.ok
+    assert [(s, t) for s, t, _ in container.mcp.invocations] == [("docs", "read")]
+    assert container.mcp.invocations[0][2]["apm-principal-token"] == "tok-user"
+
+
+async def test_tools_cannot_be_invoked_before_start():
+    session = _session(_container())
+    assert not (await session.invoke_tool("docs", "read")).ok
 
 
 async def test_audio_before_start_is_rejected():

@@ -71,9 +71,14 @@ Loads a chat by id as the user identified by the propagated token. Raises
 `ChatAccessError` when the chat cannot be loaded; the session fails closed
 with `chat_not_accessible`. `HttpChatAdapter` calls
 `GET {chat.base_url}/internal/chats/{id}` with the `apm-principal-token`
-header and reads `id` and `topic`. The internal endpoint does not check the
-user's access to the chat; a user-scoped `GET /v1/chats/{chatId}` is requested
-in https://github.com/onecx/internal-tasks/issues/995[onecx/internal-tasks#995].
+header and reads `id`, `topic`, the owner `userId` and `participants[].userId`.
+The internal endpoint is authorized by Pipecat's service token and does not
+check the user's access to the chat, so the session requires the principal's
+subject to be the chat owner or a participant; otherwise the session fails with
+`chat_not_accessible`. A user-scoped `GET /v1/chats/{chatId}` is requested
+in https://github.com/onecx/internal-tasks/issues/995[onecx/internal-tasks#995]
+and should replace this stand-in. This assumes the configured subject claim
+equals the chat-svc `userId`.
 
 == Speech
 

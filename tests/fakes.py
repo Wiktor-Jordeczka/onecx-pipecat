@@ -54,14 +54,18 @@ class FakeAuth:
 class FakeChat:
     def __init__(self) -> None:
         self._topics: dict[str, str] = {}
+        self._users: dict[str, frozenset[str]] = {}
 
-    def register(self, chat_id: str, topic: str = "") -> None:
+    def register(self, chat_id: str, topic: str = "", users: tuple[str, ...] = ("user-1",)) -> None:
         self._topics[chat_id] = topic
+        self._users[chat_id] = frozenset(users)
 
     async def load(self, chat_id: str, apm_principal_token: str):
         if chat_id not in self._topics:
             raise ChatAccessError(f"chat {chat_id!r} not accessible")
-        return SimpleNamespace(chat_id=chat_id, topic=self._topics[chat_id])
+        return SimpleNamespace(
+            chat_id=chat_id, topic=self._topics[chat_id], user_ids=self._users[chat_id]
+        )
 
 
 class FakeAgentConfig:
@@ -95,6 +99,7 @@ class FakeMcp:
         self.tools: dict[str, list[str]] = {}
         self.failures: dict[str, str] = {}
         self.calls: list[tuple[list[str], dict[str, str]]] = []
+        self.invocations: list[tuple[str, str, dict[str, str]]] = []
 
     async def discover(
         self, servers: list[McpServerSnapshot], headers: Mapping[str, str]
@@ -120,7 +125,8 @@ class FakeMcp:
         headers: Mapping[str, str],
         args: dict[str, Any] | None = None,
     ) -> McpToolResult:
-        return McpToolResult(ok=False, error="not implemented")
+        self.invocations.append((server.name, proposal.tool_name, dict(headers)))
+        return McpToolResult(ok=True, value="done")
 
 
 def fake_container(
