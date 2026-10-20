@@ -1,27 +1,37 @@
 """Concrete adapter construction from Settings.
 
-Every function takes Settings and returns an in-memory implementation.
-Swapping a capability for a real adapter means writing a new module and
-changing exactly one of these call sites.
+OneCX boundaries (auth, agent configuration, chat, permission, MCP) always use
+their real implementation; there is no in-memory fallback that a deployment
+could silently run on. Speech and persistence stay in-memory until real
+adapters exist.
 """
 
 from __future__ import annotations
 
-from onecx_pipecat.adapters.agent_config import InMemoryAgentConfigAdapter
-from onecx_pipecat.adapters.auth import InMemoryAuthAdapter
-from onecx_pipecat.adapters.mcp import InMemoryMcpAdapter
-from onecx_pipecat.adapters.permission import InMemoryPermissionAdapter
+from onecx_pipecat.adapters.agent_config import HttpAgentConfigAdapter
+from onecx_pipecat.adapters.auth import ClientCredentialsAuth, JwtAuthAdapter
+from onecx_pipecat.adapters.chat import HttpChatAdapter
+from onecx_pipecat.adapters.mcp import HttpMcpAdapter
+from onecx_pipecat.adapters.permission import HttpPermissionAdapter
 from onecx_pipecat.adapters.persistence import InMemoryPersistence
 from onecx_pipecat.adapters.speech import InMemorySttAdapter, InMemoryTtsAdapter
 from onecx_pipecat.config import Settings
 
 
-def build_auth(settings: Settings):
-    return InMemoryAuthAdapter(settings.auth)
+def build_service_auth(settings: Settings) -> ClientCredentialsAuth:
+    return ClientCredentialsAuth(settings.auth)
 
 
-def build_agent_config(settings: Settings):
-    return InMemoryAgentConfigAdapter(settings.agent_config)
+def build_auth(settings: Settings, service_auth: ClientCredentialsAuth):
+    return JwtAuthAdapter(settings.auth, service_auth)
+
+
+def build_agent_config(settings: Settings, service_auth: ClientCredentialsAuth):
+    return HttpAgentConfigAdapter(settings.agent_config, service_auth)
+
+
+def build_chat(settings: Settings, service_auth: ClientCredentialsAuth):
+    return HttpChatAdapter(settings.chat, service_auth)
 
 
 def build_stt(settings: Settings):
@@ -36,9 +46,10 @@ def build_persistence(settings: Settings):
     return InMemoryPersistence(settings.persistence)
 
 
-def build_permission(settings: Settings):
-    return InMemoryPermissionAdapter(settings.permission)
+def build_permission(settings: Settings, service_auth: ClientCredentialsAuth):
+    return HttpPermissionAdapter(settings.permission, service_auth)
 
 
 def build_mcp(settings: Settings):
-    return InMemoryMcpAdapter(settings.mcp)
+    # MCP servers are per-agent and may be external: Pipecat's service token is not sent there.
+    return HttpMcpAdapter(settings.mcp)

@@ -9,7 +9,7 @@ Nested fields use `__` as the delimiter, so:
 ONECX_PORT=9000
 ONECX_AUTH__ISSUER=https://issuer.example
 ONECX_SPEECH__STT_PROVIDER=aws
-ONECX_PERMISSION__DEFAULT_ACTION=deny
+ONECX_PERMISSION__VOICE_RESOURCE=VOICE
 ----
 
 == Reference
@@ -40,15 +40,38 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 
 | `auth.issuer`
 | `https://auth.example`
-| Expected JWT issuer for `InMemoryAuthAdapter`-compatible tokens.
+| Expected JWT issuer, validated by `JwtAuthAdapter` when verifying the
+`apm_principal_token` carried in `start_session`.
 
 | `auth.audience`
 | `onecx-pipecat`
-| Expected JWT audience.
+| Expected JWT audience, validated by `JwtAuthAdapter`.
 
 | `auth.token_claim_subject`
 | `sub`
 | JWT claim name read as the authenticated subject.
+
+| `auth.jwks`
+| (empty)
+| Keycloak JWKS used to verify the `apm_principal_token` carried in
+`start_session`: an embedded `keys` document as a JSON string, or a URL.
+Empty fetches `{auth.issuer}/protocol/openid-connect/certs`. The set is
+refetched when a token carries an unknown `kid` (at most once a minute).
+
+| `auth.client_id`
+| `onecx-pipecat`
+| Client identifier of Pipecat's own OIDC client-credentials grant; the
+resulting token is sent as `Authorization: Bearer` to ai-provider, chat, and
+permission services (never to MCP servers).
+
+| `auth.client_secret`
+| (empty)
+| Client secret for Pipecat's OIDC client-credentials grant.
+
+| `auth.token_endpoint`
+| (empty)
+| OIDC token endpoint for the client-credentials grant. Empty uses
+`{auth.issuer}/protocol/openid-connect/token`.
 
 | `agent_config.default_agent_id`
 | `onecx-agent`
@@ -57,6 +80,16 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `agent_config.default_snapshot_version`
 | `1`
 | Default snapshot version to pin.
+
+| `agent_config.base_url`
+| `http://onecx-ai-provider-svc:8080`
+| Base URL of onecx-ai-provider-svc; `HttpAgentConfigAdapter` calls
+`GET /v1/agents/{id}/configuration` once per session.
+
+| `chat.base_url`
+| `http://onecx-chat-svc:8080`
+| Base URL of onecx-chat-svc; `HttpChatAdapter` calls
+`GET /internal/chats/{id}` to load the chat as the user.
 
 | `speech.stt_provider`
 | `inmemory`
@@ -78,45 +111,50 @@ ONECX_PERMISSION__DEFAULT_ACTION=deny
 | `512`
 | Soft cap on entries kept per session.
 
-| `permission.default_action`
-| `always_ask`
-| Default `PermissionAction` for tools that do not match a policy.
+| `permission.base_url`
+| `http://onecx-permission-svc:8080`
+| Base URL of onecx-permission-svc; `HttpPermissionAdapter` calls
+`POST /v1/permissions/user/{productName}/{appId}` to check the user's voice
+permission.
 
-| `mcp.default_server_url`
-| `inmemory`
-| MCP server identifier (in-memory by default).
+| `permission.voice_product_name`
+| `onecx-ai`
+| `productName` of the application that owns the voice permission.
+
+| `permission.voice_app_id`
+| `onecx-ai-ui`
+| `appId` of the application that owns the voice permission.
+
+| `permission.voice_resource`
+| `VOICE`
+| `resource` of the OneCX permission that grants voice.
+
+| `permission.voice_action`
+| `USE`
+| `action` of the OneCX permission that grants voice.
 
 | `mcp.timeout_seconds`
 | `30.0`
-| Per-invocation MCP timeout.
+| HTTP timeout for MCP calls. MCP server URLs are *not* configured here: they
+come from each agent's configuration (`mcpServers[].url`).
 
 |===
 
-== In-memory adapter coverage
+== Real and in-memory adapters
 
-The in-memory adapters are settings-light stand-ins: each one loads and
-validates its nested `Settings` model, but only some fields are read at
-runtime. This section states exactly which, so the reference above matches
-shipped behavior.
+The OneCX boundaries — authentication, agent configuration, chat, permission,
+and MCP — always use their real adapter (`JwtAuthAdapter`,
+`HttpAgentConfigAdapter`, `HttpChatAdapter`, `HttpPermissionAdapter`,
+`HttpMcpAdapter`). There is no in-memory fallback a deployment could silently
+run on: a token that cannot be verified against the issuer's JWKS, or a
+service call whose client-credentials token cannot be obtained, fails closed.
 
-* *Read by the in-memory adapters today:*
-  ** `permission.default_action` — the fallback `PermissionAction` that
-     `InMemoryPermissionAdapter` returns for tools that match no explicit
-     (write) policy.
-  ** `persistence.max_entries_per_session` — the per-session cap that
-     `InMemoryPersistence` enforces by evicting the oldest entry when a
-     session exceeds it.
-* *Loaded and validated, but not yet read by the in-memory adapters:* every
-  other field in the reference. Each documents the contract a real,
-  non-in-memory adapter honors once it is wired in — for example
-  `auth.issuer` / `auth.audience` / `auth.token_claim_subject` are the JWT
-  fields a real auth adapter validates (the in-memory auth stand-in resolves
-  tokens from a local table rather than parsing JWTs), `speech.*` the
-  speech-backend knobs, `agent_config.*` the default pin,
-  `persistence.backend` / `mcp.default_server_url` the backend selectors, and
-  `mcp.timeout_seconds` the per-invocation timeout. These fields are
-  placeholders reserved for real adapter implementations, not consumed by the
-  in-memory ones.
+Speech and persistence still use in-memory adapters because no real ones
+exist yet; `persistence.max_entries_per_session` is enforced by
+`InMemoryPersistence`, and `speech.*` is loaded but not yet read.
+
+Not yet read by any adapter: `agent_config.default_agent_id`,
+`agent_config.default_snapshot_version`, and `persistence.backend`.
 
 == Precedence
 

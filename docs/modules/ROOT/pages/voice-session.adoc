@@ -1,20 +1,34 @@
 = Voice session
 
-The application exposes an authenticated WebSocket voice endpoint at
-`/ws/voice`. The session logic is transport-neutral: a `VoiceSession` consumes
-typed commands and returns typed events, so the WebSocket carrier can later be
-replaced (for example with WebRTC) without changing session behavior.
+The application exposes a WebSocket voice endpoint at `/ws/voice`. The
+session logic is transport-neutral: a `VoiceSession` consumes typed commands
+and returns typed events, so the WebSocket carrier can later be replaced (for
+example with WebRTC) without changing session behavior.
 
 == Authentication
 
-Connect with a token as a query parameter:
+The connection is accepted without authentication and is authenticated by the
+first client message. A `start_session` command carries a OneCX token in the
+`apm_principal_token` field; the session authenticates it before doing anything
+else:
 
-----
-ws://127.0.0.1:8080/ws/voice?token=<token>
-----
+. The token's signature, issuer, and expiry are verified against the Keycloak
+JWKS by the authentication adapter.
+. Chat access for `chat_id` is checked with the token propagated to the
+chat service.
+. The user's existing voice permission is checked.
+. The agent configuration for `agent_id` is pinned for the whole session.
 
-The token is resolved through the authentication adapter. An unknown or missing
-token closes the connection with code `1008` before it is accepted.
+Every step fails closed: an invalid or expired token, a chat the user is
+neither the owner of nor a participant in, a missing voice permission, or an
+unpinnable agent configuration sends a typed `error` event followed by
+`session_closed` (reason `start_failed`), then closes the connection with code
+`1008`. A failed start leaves no session state behind and cannot be retried on
+the same connection.
+
+The legacy query-string form (`?token=...`) is no longer accepted, and the
+endpoint takes no query parameters at all. A connection that presents any
+query parameter is closed with code `1008` before it is accepted.
 
 == Commands
 
@@ -25,14 +39,21 @@ Commands are JSON objects with a `type` field, sent by the client.
 | `type` | Payload
 
 | `start_session`
-| `agent_id` (string) — pins the agent configuration snapshot and moves the
-session to the listening state.
+| `agent_id` (string), `chat_id` (string), and `apm_principal_token`
+(string). Authenticates the token, checks chat access and voice permission,
+pins the agent configuration snapshot, discovers MCP tools once, and moves
+the session to the listening state. This is the first command the session
+accepts.
 
 | `audio`
 | `audio` (base64 string) — a finalized chunk of captured microphone audio.
 
 | `stop`
 | none — ends the session and returns to typed chat.
+
+| `refresh_token`
+| `apm_principal_token` (string). Replaces the session's token with a fresh
+one after authentication, so the current session survives a token rotation.
 |===
 
 == Events
@@ -43,24 +64,56 @@ Events are JSON objects with a `kind` field, emitted by the session.
 |===
 | `kind` | Meaning
 
-| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `agent_version`.
+| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `schema_version` (the pinned `AgentConfiguration.schemaVersion`).
 | `transcript` | Finalized speech recognition; carries `text` and `state`.
 | `assistant_text` | Assistant caption; carries `text` and `status`.
 | `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`COMPLETE` or `FAILED`).
 | `turn_complete` | The turn finished; carries the persisted assistant `entry_id`.
 | `error` | A typed failure; carries `code` and `message`.
 | `session_closed` | The session ended; carries a `reason`.
+| `degraded_capability` | An MCP server could not be reached during the once-per-session tool discovery; the session continues without that server's tools.
 |===
+
+The `error` event carries one of the following `code` values:
+
+* `authentication_failed` — the token is missing, invalid, or expired.
+* `chat_not_accessible` — chat access for `chat_id` was denied.
+* `voice_not_permitted` — the user has no voice permission.
+* `config_unavailable` — the agent configuration could not be pinned (voice
+disabled, conflict, or the agent service unreachable).
+* `token_expired` — the session token expired mid-session; the session is
+closed. Expiry is checked on every command and periodically while idle.
+* `principal_mismatch` — a `refresh_token` carried a token for a different
+subject or tenant than the user who started the session; the token is not
+applied.
+* `illegal_state` — a command arrived in the wrong state (audio before
+`start_session`, a second `start_session`, or a `refresh_token`/audio after
+the session closed).
 
 == Behavior
 
-* Starting a session without valid configuration fails closed with an
-`error` of code `config_unavailable`; the session stays unstarted.
-* Audio before `start_session`, or a second `start_session`, is rejected with an
-`error` of code `illegal_state`.
+* Starting a session without valid configuration fails closed with an `error`
+of code `config_unavailable`; the session is closed.
+* Audio before `start_session`, or a second `start_session`, is rejected with
+an `error` of code `illegal_state`.
 * Only finalized transcripts are persisted. Empty, noise-only input stays
 ephemeral and emits no events.
 * A completed turn persists one human entry and one assistant entry through the
 persistence adapter.
 * Speech synthesis failure keeps the assistant text and emits `assistant_audio`
 with `state` `FAILED`, so the answer is never discarded.
+* MCP tools are discovered once, when the session starts. The authenticated
+token is propagated to each MCP server. A server that fails is skipped, and a
+`degraded_capability` event is emitted for it; the session continues with the
+tools that resolved successfully.
+* Only tools whose execution policy resolves to `ALWAYS_ALLOW` are advertised
+to the assistant. Tools that resolve to `ALWAYS_ASK` or `DENY` are withheld and
+`VoiceSession.invoke_tool` refuses to invoke them. MCP redirects are not
+followed, so the user's token is never forwarded to another host.
+* The agent configuration is pinned once at `start_session` and is not
+re-read for the lifetime of the session.
+* A `refresh_token` command swaps in a new token after authentication. The
+token must belong to the same subject and tenant as the session's user,
+otherwise it is rejected with `principal_mismatch`. An
+expired token ends the session with an `error` of code `token_expired` and a
+`session_closed` event.

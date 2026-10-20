@@ -5,20 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from onecx_pipecat.adapters import (
-    InMemoryAgentConfigAdapter,
-    InMemoryAuthAdapter,
-    InMemoryMcpAdapter,
-    InMemoryPermissionAdapter,
+    AgentConfigAdapter,
+    AuthAdapter,
+    ChatAdapter,
     InMemoryPersistence,
-    InMemorySttAdapter,
-    InMemoryTtsAdapter,
+    McpAdapter,
+    PermissionAdapter,
+    SttAdapter,
+    TtsAdapter,
 )
 from onecx_pipecat.adapters.factory import (
     build_agent_config,
     build_auth,
+    build_chat,
     build_mcp,
     build_permission,
     build_persistence,
+    build_service_auth,
     build_stt,
     build_tts,
 )
@@ -29,6 +32,7 @@ from onecx_pipecat.config import Settings
 class AdapterSummary:
     auth: str
     agent_config: str
+    chat: str
     stt: str
     tts: str
     persistence: str
@@ -45,18 +49,21 @@ class AppContainer:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
-        self.auth: InMemoryAuthAdapter = build_auth(self.settings)
-        self.agent_config: InMemoryAgentConfigAdapter = build_agent_config(self.settings)
-        self.stt: InMemorySttAdapter = build_stt(self.settings)
-        self.tts: InMemoryTtsAdapter = build_tts(self.settings)
+        service_auth = build_service_auth(self.settings)
+        self.auth: AuthAdapter = build_auth(self.settings, service_auth)
+        self.agent_config: AgentConfigAdapter = build_agent_config(self.settings, service_auth)
+        self.chat: ChatAdapter = build_chat(self.settings, service_auth)
+        self.stt: SttAdapter = build_stt(self.settings)
+        self.tts: TtsAdapter = build_tts(self.settings)
         self.persistence: InMemoryPersistence = build_persistence(self.settings)
-        self.permission: InMemoryPermissionAdapter = build_permission(self.settings)
-        self.mcp: InMemoryMcpAdapter = build_mcp(self.settings)
+        self.permission: PermissionAdapter = build_permission(self.settings, service_auth)
+        self.mcp: McpAdapter = build_mcp(self.settings)
 
     def adapters(self) -> AdapterSummary:
         return AdapterSummary(
             auth=_name(self.auth),
             agent_config=_name(self.agent_config),
+            chat=_name(self.chat),
             stt=_name(self.stt),
             tts=_name(self.tts),
             persistence=_name(self.persistence),

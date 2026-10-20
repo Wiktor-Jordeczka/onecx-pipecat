@@ -1,12 +1,12 @@
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
-    AgentToolSnapshot,
-    ExecutionPolicy,
+    McpServerSnapshot,
     PermissionAction,
     PermissionDecision,
     PermissionDecisionStatus,
     Principal,
     ToolProposal,
+    ToolRule,
     VoiceEntry,
     VoiceEntryKind,
 )
@@ -37,19 +37,29 @@ def test_permission_decision_carries_action():
     assert "write" in d.reason
 
 
+def test_permission_action_uses_canonical_vocabulary():
+    assert [a.value for a in PermissionAction] == ["DENY", "ALWAYS_ASK", "ALWAYS_ALLOW"]
+    # The legacy ALLOW / NEVER_ASK values are gone.
+    assert not hasattr(PermissionAction, "ALLOW")
+
+
+def test_mcp_server_without_unlisted_policy_denies_unlisted_tools():
+    s = McpServerSnapshot(name="crm", url="https://crm.example/mcp")
+    assert s.unlisted_tool_permission is PermissionAction.DENY
+    assert s.tool_rules == []
+
+
 def test_agent_config_snapshot_is_pinned():
     s = AgentConfigSnapshot(
         agent_id="a",
-        version=3,
-        tool_names=["w.get"],
-        tools=[
-            AgentToolSnapshot(
-                tool_id="tool-1",
-                tool_name="w.get",
-                execution_policy=ExecutionPolicy.ALWAYS_ASK,
+        schema_version="1",
+        mcp_servers=[
+            McpServerSnapshot(
+                name="crm",
+                url="https://crm.example/mcp",
+                tool_rules=[ToolRule(tool_name="w.get", permission=PermissionAction.ALWAYS_ASK)],
             )
         ],
     )
-    assert s.version == 3
-    assert s.tool_names == ["w.get"]
-    assert s.tools[0].tool_name == "w.get"
+    assert s.schema_version == "1"
+    assert s.mcp_servers[0].tool_rules[0].tool_name == "w.get"

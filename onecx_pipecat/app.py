@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 from importlib import metadata
@@ -9,9 +10,8 @@ from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.container import AppContainer
-from onecx_pipecat.protocol import ErrorEvent, decode_command
+from onecx_pipecat.protocol import ErrorEvent, Event, decode_command
 from onecx_pipecat.session import SessionState, VoiceSession
 
 # WebSocket close code for an unauthenticated or otherwise rejected connection.
@@ -25,7 +25,7 @@ def _pipecat_version() -> str:
         return "unknown"
 
 
-def create_app(container: AppContainer) -> FastAPI:
+def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> FastAPI:
     app = FastAPI(title=container.settings.app_name)
 
     @app.get("/healthz")
@@ -39,15 +39,31 @@ def create_app(container: AppContainer) -> FastAPI:
 
     @app.websocket("/ws/voice")
     async def voice(websocket: WebSocket) -> None:
-        token = websocket.query_params.get("token", "")
-        try:
-            principal = await container.auth.authenticate(token)
-        except AuthenticationError:
+        # Tokens belong in the first message, not the URL, and the endpoint takes
+        # no query parameters at all: any of them is rejected.
+        if websocket.query_params:
             await websocket.close(code=_WS_POLICY_VIOLATION)
             return
 
         await websocket.accept()
-        session = VoiceSession(uuid4().hex, principal, container)
+        session = VoiceSession(uuid4().hex, container)
+        send_lock = asyncio.Lock()
+
+        async def send(events: list[Event]) -> None:
+            async with send_lock:
+                for event in events:
+                    await websocket.send_json(event.model_dump())
+
+        async def watch_expiry() -> None:
+            # An idle session must end at token expiry, not only when audio arrives.
+            while True:
+                await asyncio.sleep(expiry_check_seconds)
+                if events := session.check_expiry():
+                    await send(events)
+                    await websocket.close(code=_WS_POLICY_VIOLATION)
+                    return
+
+        watcher = asyncio.create_task(watch_expiry())
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -57,15 +73,18 @@ def create_app(container: AppContainer) -> FastAPI:
                     payload = None
                 command = decode_command(payload) if isinstance(payload, dict) else None
                 if command is None:
-                    await websocket.send_json(
-                        ErrorEvent(code="bad_command", message="malformed command").model_dump()
-                    )
+                    # The first message must be a valid ``start_session``; an
+                    # invalid or unknown command is reported and ignored.
+                    await send([ErrorEvent(code="bad_command", message="malformed command")])
                     continue
-                for event in await session.dispatch(command):
-                    await websocket.send_json(event.model_dump())
+                await send(await session.dispatch(command))
                 if session.state is SessionState.CLOSED:
+                    if session.start_failed:
+                        await websocket.close(code=_WS_POLICY_VIOLATION)
                     break
         except WebSocketDisconnect:
             return
+        finally:
+            watcher.cancel()
 
     return app

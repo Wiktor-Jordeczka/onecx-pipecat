@@ -1,32 +1,84 @@
 = Adapter interfaces
 
-The application composes six replaceable adapters. Each capability is a
-`typing.Protocol` in `onecx_pipecat/adapters/` and ships with an
-in-memory implementation that is safe to construct with zero cloud
-credentials. Swapping a capability means writing a new class that
-satisfies the same `Protocol` and pointing the corresponding factory
-function in `onecx_pipecat/adapters/factory.py` at it.
+The application composes a set of replaceable adapters. Each capability is a
+`typing.Protocol` in `onecx_pipecat/adapters/`. The OneCX boundaries
+(authentication, agent configuration, chat, permission, MCP) ship only their
+real implementation, which `onecx_pipecat/adapters/factory.py` always builds;
+tests substitute fakes from `tests/fakes.py`. Speech and persistence ship
+in-memory implementations until real ones exist. Swapping a capability means
+writing a new class that satisfies the same `Protocol` and pointing the
+corresponding factory function at it.
 
 == Authentication
 
-* Protocol: `AuthAdapter.authenticate(token) -> Principal`
-* In-memory: `InMemoryAuthAdapter`
+* Protocol: `AuthAdapter` — `authenticate(apm_principal_token) -> Principal`,
+  `is_expired(token) -> bool`, `refresh(token) -> Principal`,
+  `service_token() -> str`
+* Implementation: `JwtAuthAdapter`
 
-Raise `AuthenticationError` for tokens that are not in the local table.
-`seed(token, subject, tenant_id, roles)` is a test-only convenience. The
-in-memory stand-in resolves a token against a local table rather than parsing
-JWTs, so the `auth.issuer`, `auth.audience`, and `auth.token_claim_subject`
-settings are not read here — they are the fields a real (non-in-memory) auth
-adapter validates.
+The `apm_principal_token` is the OneCX token the client carries in the
+`start_session` command. `authenticate` resolves it to a `Principal`;
+`is_expired` reports whether a token whose session is already open has since
+expired (driving `token_expired`); `refresh` resolves a fresh token
+presented by a `refresh_token` command; `service_token` returns Pipecat's own
+client-credentials token.
+
+`ClientCredentialsAuth` (an `httpx.Auth`) requests that token from
+`auth.token_endpoint` (default: the issuer's Keycloak token endpoint) with
+HTTP Basic `client_id`/`client_secret`, caches it until 30 s before expiry,
+and attaches it as `Authorization: Bearer` to every ai-provider, chat, and
+permission call, next to `apm-principal-token`. A failed token request fails
+that call closed.
+
+`JwtAuthAdapter` verifies the token against a Keycloak JWKS. `auth.jwks` is an
+embedded document or a URL; empty fetches the issuer's
+`/protocol/openid-connect/certs` on first use. `set_jwks(jwks)` pins an
+explicit set (an embedded `{"keys": [...]}` document, a bare list of JWKs, or
+a single JWK) that is never refetched. `authenticate` decodes the token with
+RS256, checking signature, `issuer`, and `audience`; `is_expired` decodes
+without re-verifying expiry and reports whether `exp` is in the past.
+
+The key used for a token is chosen by the token's `kid` header, so a JWKS that
+carries several keys (a rotated set) is used correctly: `authenticate` reads
+the unverified `kid` and verifies against the matching key. An unknown `kid`
+refetches a URL-based JWKS (at most once a minute, so random `kid` values
+cannot force repeated fetches); a `kid` still unknown afterwards is rejected,
+and a token with no `kid` falls back to the first key in the set.
 
 == Agent Configuration
 
-* Protocol: `AgentConfigAdapter.pin(tenant_id, agent_id) -> AgentConfigSnapshot`
-* In-memory: `InMemoryAgentConfigAdapter`
+* Protocol: `AgentConfigAdapter.pin(tenant_id, agent_id,
+  apm_principal_token) -> AgentConfigSnapshot`
+* Implementation: `HttpAgentConfigAdapter`
 
-Returns the highest-registered `version` for the (tenant, agent) pair.
-`register(tenant_id, agent_id, version, system_prompt, tool_names)` seeds
-the table.
+The snapshot is pinned **once**, when the session starts, and is not re-read
+for the lifetime of the session. `HttpAgentConfigAdapter` calls
+onecx-ai-provider-svc
+`GET {agent_config.base_url}/v1/agents/{id}/configuration` with the
+`apm-principal-token` header and parses the `AgentConfiguration` payload:
+`schemaVersion`, `agent.id`, `scaffold.systemPrompt`, and `mcpServers[]`
+(`name`, `url`, `credentialRef`, `unlistedToolPermission`, `toolRules[]`).
+It fails closed with `AgentConfigError` on `404`, `409`, any other error
+status, an unreachable endpoint, an MCP server without `name`/`url`, or when
+`voice.voiceEnabled` is not `true`.
+
+== Chat Access
+
+* Protocol: `ChatAdapter.load(chat_id, apm_principal_token) -> Chat`
+* Implementation: `HttpChatAdapter`
+
+Loads a chat by id as the user identified by the propagated token. Raises
+`ChatAccessError` when the chat cannot be loaded; the session fails closed
+with `chat_not_accessible`. `HttpChatAdapter` calls
+`GET {chat.base_url}/internal/chats/{id}` with the `apm-principal-token`
+header and reads `id`, `topic`, the owner `userId` and `participants[].userId`.
+The internal endpoint is authorized by Pipecat's service token and does not
+check the user's access to the chat, so the session requires the principal's
+subject to be the chat owner or a participant; otherwise the session fails with
+`chat_not_accessible`. A user-scoped `GET /v1/chats/{chatId}` is requested
+in https://github.com/onecx/internal-tasks/issues/995[onecx/internal-tasks#995]
+and should replace this stand-in. This assumes the configured subject claim
+equals the chat-svc `userId`.
 
 == Speech
 
@@ -34,8 +86,8 @@ the table.
   `TtsAdapter.synthesize(text) -> bytes`
 * In-memory: `InMemorySttAdapter`, `InMemoryTtsAdapter`
 
-Deterministic; the STT returns a fixed transcript for non-empty input and
-the TTS returns UTF-8 bytes of the input text.
+Deterministic; the STT returns a fixed transcript for non-empty input and the
+TTS returns UTF-8 bytes of the input text.
 
 == Persistence
 
@@ -50,30 +102,52 @@ session exceeds the cap.
 
 == Permission
 
-* Protocol: `PermissionAdapter.evaluate(proposal) -> PermissionDecision`
-* In-memory: `InMemoryPermissionAdapter`
+* Protocol: `PermissionAdapter` —
+  `has_voice_permission(principal, apm_principal_token) -> bool`
+* Implementation: `HttpPermissionAdapter`
+* Tool policy: `resolve_tool_permission(snapshot, tool)`,
+  `allowed_tools(snapshot, discovered)` (pure functions)
 
-Policy is data, not a name heuristic. The adapter resolves a decision in the
-same order provider-svc intends:
+`HttpPermissionAdapter` uses the same public API as the OneCX permissions
+Quarkus extension:
+`POST {permission.base_url}/v1/permissions/user/{voice_product_name}/{voice_app_id}`
+with `{"token": <apm-principal-token>}`. permission-svc resolves the user's
+roles from the token and returns `{"permissions": {resource: [actions]}}`;
+voice is granted when `permission.voice_action` is listed under
+`permission.voice_resource`. Any error status or unreachable endpoint fails
+closed (no voice permission).
 
-. An exact per-agent rule for the tool (`AgentMcpToolRule.allowed`, one of
-`ALLOW`, `DENY`, `ALWAYS_ASK`).
-. The tool connection's server default (`ExecutionPolicy`); legacy `NEVER_ASK`
-maps to `ALLOW`, `ALWAYS_ASK` stays `ALWAYS_ASK`.
-. The operator's global `permission.default_action` (the default is
-`always_ask`).
+Tool policy is data resolved by ai-provider, not by Pipecat. Actions use the
+canonical vocabulary `DENY`, `ALWAYS_ASK`, and `ALWAYS_ALLOW`. For a
+discovered tool, `resolve_tool_permission` uses:
 
-The in-memory stand-in accepts rules through `set_rule(tool_name, allowed)` and
-a server default through `set_server_default(policy)`; a real adapter reads both
-from the pinned Agent Configuration snapshot.
+. The matching `toolRules[]` entry of the tool's MCP server.
+. Otherwise that server's `unlistedToolPermission` (`DENY` when absent).
+. A tool from a server that is not in the snapshot is `DENY`.
+
+`allowed_tools` returns only the discovered tools that resolve to
+`ALWAYS_ALLOW`; those are the tools the session advertises.
 
 == MCP
 
-* Protocol: `McpAdapter.invoke(proposal, args) -> McpToolResult`
-* In-memory: `InMemoryMcpAdapter`
+* Protocol: `McpAdapter` —
+  `discover(servers, headers) -> McpDiscovery`,
+  `invoke(server, proposal, headers, args) -> McpToolResult`
+* Implementation: `HttpMcpAdapter` (official `mcp` SDK, MCP Streamable HTTP)
 
-Unknown tools return a sanitized `McpToolResult(ok=False, error=...)` so
-the assistant can reason over the failure shape — the same contract the
-`MCP_FAILURE` branch in the prototype exercises. The in-memory stand-in
-does not enforce `mcp.timeout_seconds` around a handler; that is the
-per-invocation timeout a real (non-in-memory) MCP adapter applies.
+MCP servers are **per agent**: the session passes the pinned snapshot's
+`mcp_servers` (from `mcpServers[].url`) to `discover`; nothing is configured
+globally except `mcp.timeout_seconds`. Each call opens an MCP session
+(`initialize`) with the user headers from `propagated_headers`, matching
+onecx-ai-provider-runtime: `apm-principal-token`, and the user's
+`Authorization` from `start_session` forwarded as `UserAuthorization`.
+Pipecat's service token is never sent to MCP servers. `discover` pages through
+`tools/list` once per
+session start and returns an `McpDiscovery` with the tools and a list of
+`(server_name, reason)` pairs for servers that failed; a failing server is
+surfaced as a `degraded_capability` event rather than aborting the session.
+`invoke` runs `tools/call`; a tool error or an unreachable server is a
+sanitized `McpToolResult(ok=False, error=...)`, otherwise `value` is the
+structured content or the tool's text.
+
+`credentialRef` is parsed but not yet resolved to MCP server credentials.

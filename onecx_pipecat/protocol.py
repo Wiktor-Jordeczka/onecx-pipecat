@@ -16,10 +16,27 @@ from pydantic import BaseModel
 
 
 class StartSession(BaseModel):
-    """Begin a voice session against a pinned agent configuration."""
+    """Begin a voice session against a pinned agent configuration.
+
+    Carries the user's OneCX tokens in the message body — never in the URL —
+    so the session can authenticate them and load the chat as the user.
+    ``apm_principal_token`` and ``authorization`` are the raw token values the
+    user's browser presents (the latter is the ``Authorization`` header value).
+    """
 
     type: Literal["start_session"] = "start_session"
     agent_id: str
+    chat_id: str
+    apm_principal_token: str
+    authorization: str = ""
+
+
+class RefreshToken(BaseModel):
+    """Replace the session's OneCX tokens with freshly obtained values."""
+
+    type: Literal["refresh_token"] = "refresh_token"
+    apm_principal_token: str
+    authorization: str = ""
 
 
 class ClientAudio(BaseModel):
@@ -35,14 +52,14 @@ class StopSession(BaseModel):
     type: Literal["stop"] = "stop"
 
 
-Command = StartSession | ClientAudio | StopSession
+Command = StartSession | ClientAudio | StopSession | RefreshToken
 
 
 class SessionReady(BaseModel):
     kind: Literal["session_ready"] = "session_ready"
     session_id: str
     agent_id: str
-    agent_version: int
+    schema_version: str
 
 
 class Transcript(BaseModel):
@@ -68,6 +85,17 @@ class TurnComplete(BaseModel):
     entry_id: str
 
 
+class DegradedCapability(BaseModel):
+    """A capability is unavailable this session (e.g. an MCP server failed).
+
+    The session continues with the remaining capabilities; this event lets a
+    client surface the degradation to the user.
+    """
+
+    kind: Literal["degraded_capability"] = "degraded_capability"
+    reason: str = ""
+
+
 class ErrorEvent(BaseModel):
     kind: Literal["error"] = "error"
     code: str
@@ -86,8 +114,23 @@ Event = (
     | AssistantAudio
     | TurnComplete
     | ErrorEvent
+    | DegradedCapability
     | SessionClosed
 )
+
+
+def _principal_token(raw: dict) -> str | None:
+    """Read the user's ``apm-principal-token`` (or its underscore alias)."""
+    for key in ("apm_principal_token", "apm-principal-token"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _optional_str(raw: dict, key: str) -> str:
+    value = raw.get(key)
+    return value if isinstance(value, str) else ""
 
 
 def decode_command(raw: dict) -> Command | None:
@@ -95,9 +138,30 @@ def decode_command(raw: dict) -> Command | None:
     match raw.get("type"):
         case "start_session":
             agent_id = raw.get("agent_id")
-            if not isinstance(agent_id, str) or not agent_id:
+            chat_id = raw.get("chat_id")
+            apm_principal_token = _principal_token(raw)
+            if (
+                not isinstance(agent_id, str)
+                or not agent_id
+                or not isinstance(chat_id, str)
+                or not chat_id
+                or apm_principal_token is None
+            ):
                 return None
-            return StartSession(agent_id=agent_id)
+            return StartSession(
+                agent_id=agent_id,
+                chat_id=chat_id,
+                apm_principal_token=apm_principal_token,
+                authorization=_optional_str(raw, "authorization"),
+            )
+        case "refresh_token":
+            apm_principal_token = _principal_token(raw)
+            if apm_principal_token is None:
+                return None
+            return RefreshToken(
+                apm_principal_token=apm_principal_token,
+                authorization=_optional_str(raw, "authorization"),
+            )
         case "audio":
             encoded = raw.get("audio", "")
             if not isinstance(encoded, str):

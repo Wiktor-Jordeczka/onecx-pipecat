@@ -1,61 +1,98 @@
-"""Permission adapter: evaluate a tool call and drive decisions."""
+"""Permission: the user's OneCX voice permission and per-tool policy.
+
+Two distinct concerns:
+
+* ``PermissionAdapter`` asks onecx-permission-svc whether the user already
+  holds the OneCX voice permission, through the same v1 API the OneCX
+  permissions extension uses (``POST /v1/permissions/user/{productName}/{appId}``).
+* ``resolve_tool_permission`` / ``allowed_tools`` apply the per-tool policy
+  ai-provider already resolved into the pinned agent configuration; only
+  ``ALWAYS_ALLOW`` tools are advertised.
+"""
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
+
+import httpx
 
 from onecx_pipecat.config import PermissionSettings
 from onecx_pipecat.models import (
-    AgentMcpToolRule,
-    ExecutionPolicy,
+    AgentConfigSnapshot,
+    AgentToolSnapshot,
     PermissionAction,
-    PermissionDecision,
-    ToolProposal,
+    Principal,
 )
 
 
 class PermissionAdapter(Protocol):
-    async def evaluate(self, proposal: ToolProposal) -> PermissionDecision: ...
+    async def has_voice_permission(self, principal: Principal, apm_principal_token: str) -> bool:
+        """Whether the user already has the OneCX voice permission."""
+        ...
 
 
-class InMemoryPermissionAdapter:
-    """Resolve a tool's policy the way provider-svc intends: an exact per-agent
-    rule wins, then the tool connection's server default, then the operator's
-    global default. Policy is data, never guessed from the tool name.
+class HttpPermissionAdapter:
+    """Check the voice permission via ``POST /v1/permissions/user/{productName}/{appId}``.
 
-    The real control plane owns these rules (``AgentMcpToolRule`` and
-    ``Tool.executionPolicy``); this stand-in holds them in memory so the
-    resolution order is exercisable without provider-svc.
+    permission-svc resolves the user's roles from the ``token`` and returns the
+    application's permissions as ``{resource: [actions]}``. Any error fails
+    closed (no voice permission).
     """
 
-    def __init__(self, settings: PermissionSettings | None = None) -> None:
+    def __init__(
+        self, settings: PermissionSettings | None = None, service_auth: httpx.Auth | None = None
+    ) -> None:
         self._settings = settings or PermissionSettings()
-        self._rules: dict[str, AgentMcpToolRule] = {}
-        self._server_default: ExecutionPolicy | None = None
+        self._service_auth = service_auth
+        self._client: httpx.AsyncClient | None = None
 
-    def set_rule(self, tool_name: str, allowed: PermissionAction, description: str = "") -> None:
-        self._rules[tool_name] = AgentMcpToolRule(
-            tool_name=tool_name, allowed=allowed, tool_description=description
-        )
+    def set_client(self, client: httpx.AsyncClient) -> None:
+        """Inject a client (used by tests to avoid a live network call)."""
+        self._client = client
 
-    def set_server_default(self, policy: ExecutionPolicy) -> None:
-        self._server_default = policy
-
-    async def evaluate(self, proposal: ToolProposal) -> PermissionDecision:
-        rule = self._rules.get(proposal.tool_name)
-        if rule is not None:
-            return PermissionDecision(action=rule.allowed, reason="agent tool rule")
-
-        if self._server_default is not None:
-            # Legacy server default: NEVER_ASK means "do not ask", i.e. ALLOW.
-            action = (
-                PermissionAction.ALWAYS_ASK
-                if self._server_default is ExecutionPolicy.ALWAYS_ASK
-                else PermissionAction.ALLOW
+    async def has_voice_permission(self, principal: Principal, apm_principal_token: str) -> bool:
+        s = self._settings
+        client = self._client or httpx.AsyncClient()
+        try:
+            response = await client.post(
+                f"{s.base_url}/v1/permissions/user/{s.voice_product_name}/{s.voice_app_id}",
+                headers={"apm-principal-token": apm_principal_token},
+                auth=self._service_auth,
+                json={"token": apm_principal_token},
             )
-            return PermissionDecision(action=action, reason="server default policy")
+            if not response.is_success:
+                return False
+            permissions: dict[str, Any] = response.json().get("permissions") or {}
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return False
+        finally:
+            if self._client is None:
+                await client.aclose()
+        return s.voice_action in (permissions.get(s.voice_resource) or [])
 
-        # The operator's documented choice for tools with no explicit rule; it is
-        # case-insensitive (config values are lowercase, enum values are uppercase).
-        default_action = PermissionAction(self._settings.default_action.strip().upper())
-        return PermissionDecision(action=default_action, reason="global default policy")
+
+def resolve_tool_permission(
+    snapshot: AgentConfigSnapshot, tool: AgentToolSnapshot
+) -> PermissionAction:
+    """The tool rule of the tool's MCP server, else that server's unlisted policy.
+
+    A tool from a server that is not in the snapshot is denied.
+    """
+    server = next((s for s in snapshot.mcp_servers if s.name == tool.server_name), None)
+    if server is None:
+        return PermissionAction.DENY
+    for rule in server.tool_rules:
+        if rule.tool_name == tool.tool_name:
+            return rule.permission
+    return server.unlisted_tool_permission
+
+
+def allowed_tools(
+    snapshot: AgentConfigSnapshot, discovered: list[AgentToolSnapshot]
+) -> list[AgentToolSnapshot]:
+    """Only tools resolved to ``ALWAYS_ALLOW`` are advertised."""
+    return [
+        t
+        for t in discovered
+        if resolve_tool_permission(snapshot, t) is PermissionAction.ALWAYS_ALLOW
+    ]

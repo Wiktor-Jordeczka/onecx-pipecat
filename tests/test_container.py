@@ -1,25 +1,21 @@
-import pytest
-
-from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.config import Settings
 from onecx_pipecat.container import AppContainer
 
 
-def test_container_binds_inmemory_adapters_by_default():
-    c = AppContainer(Settings())
-    s = c.adapters()
-    assert s.auth == "InMemoryAuthAdapter"
-    assert s.agent_config == "InMemoryAgentConfigAdapter"
+def test_container_binds_real_onecx_adapters():
+    s = AppContainer(Settings()).adapters()
+    assert s.auth == "JwtAuthAdapter"
+    assert s.agent_config == "HttpAgentConfigAdapter"
+    assert s.chat == "HttpChatAdapter"
     assert s.stt == "InMemorySttAdapter"
     assert s.tts == "InMemoryTtsAdapter"
     assert s.persistence == "InMemoryPersistence"
-    assert s.permission == "InMemoryPermissionAdapter"
-    assert s.mcp == "InMemoryMcpAdapter"
+    assert s.permission == "HttpPermissionAdapter"
+    assert s.mcp == "HttpMcpAdapter"
 
 
-async def test_container_isolate_adapters_between_instances():
+def test_container_isolates_adapters_between_instances():
     a = AppContainer(Settings())
     b = AppContainer(Settings())
-    a.auth.seed("tok", "u", "t")
-    with pytest.raises(AuthenticationError):
-        await b.auth.authenticate("tok")
+    assert a.persistence is not b.persistence
+    assert a.mcp is not b.mcp
