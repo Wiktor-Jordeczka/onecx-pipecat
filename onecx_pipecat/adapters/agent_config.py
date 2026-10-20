@@ -18,9 +18,14 @@ from onecx_pipecat.config import AgentConfigSettings
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
     McpServerSnapshot,
+    ModelSnapshot,
     PermissionAction,
+    ProviderSnapshot,
+    SkillSnapshot,
     ToolRule,
 )
+
+SUPPORTED_PROVIDER_TYPES = frozenset({"OPENAI", "OLLAMA", "ANTHROPIC"})
 
 
 class AgentConfigError(Exception):
@@ -111,13 +116,72 @@ def _parse_configuration(body: Any, agent_id: str) -> AgentConfigSnapshot:
 
     agent = _section(body, "agent", agent_id)
     scaffold = _section(body, "scaffold", agent_id)
+    provider = _parse_provider(_section(body, "provider", agent_id), agent_id)
+    model = _parse_model(_section(body, "model", agent_id), agent_id)
+    try:
+        skills = [_parse_skill(entry) for entry in _list(body.get("skills"))]
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise AgentConfigError(f"invalid skill configuration for agent={agent_id}") from exc
     return AgentConfigSnapshot(
         agent_id=str(agent.get("id") or agent_id),
+        agent_name=str(agent.get("name") or ""),
         schema_version=str(body.get("schemaVersion", "")),
         system_prompt=str(scaffold.get("systemPrompt") or ""),
+        provider=provider,
+        model=model,
+        skills=skills,
         mcp_servers=servers,
         # Pinned voice language; absent/empty falls back to the configured default.
         language_code=str(voice.get("languageCode") or ""),
+    )
+
+
+def _list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("expected a list")
+    return value
+
+
+def _parse_provider(section: dict[str, Any], agent_id: str) -> ProviderSnapshot:
+    provider_type = str(section.get("type") or "").strip().upper()
+    if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        raise AgentConfigError(f"unsupported or missing LLM provider type for agent={agent_id}")
+    return ProviderSnapshot(
+        id=str(section.get("id") or ""),
+        name=str(section.get("name") or ""),
+        type=provider_type,
+        llm_url=str(section.get("llmUrl") or ""),
+        auth_mode=str(section.get("authMode") or "").strip().upper(),
+        credential_ref=str(section.get("credentialRef") or ""),
+    )
+
+
+def _parse_model(section: dict[str, Any], agent_id: str) -> ModelSnapshot:
+    identifier = str(section.get("modelIdentifier") or "").strip()
+    if not identifier:
+        raise AgentConfigError(f"missing LLM model identifier for agent={agent_id}")
+    return ModelSnapshot(
+        id=str(section.get("id") or ""),
+        name=str(section.get("name") or ""),
+        model_identifier=identifier,
+        model_params=str(section.get("modelConfig") or ""),
+        communication_mode=str(section.get("communicationMode") or ""),
+    )
+
+
+def _parse_skill(entry: Any) -> SkillSnapshot:
+    if not isinstance(entry, dict):
+        raise TypeError("skill entry must be an object")
+    position = entry.get("position")
+    return SkillSnapshot(
+        id=str(entry.get("id") or ""),
+        name=str(entry.get("name") or ""),
+        description=str(entry.get("description") or ""),
+        instruction=str(entry.get("instruction") or ""),
+        position=int(position) if position is not None else 0,
+        source=str(entry.get("source") or ""),
     )
 
 

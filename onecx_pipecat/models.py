@@ -52,6 +52,40 @@ class McpServerSnapshot(BaseModel):
     tool_rules: list[ToolRule] = Field(default_factory=list)
 
 
+class ProviderSnapshot(BaseModel):
+    """The LLM provider of the pinned agent (ai-provider ``ProviderConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    type: str
+    llm_url: str = ""
+    auth_mode: str = ""
+    credential_ref: str = ""
+
+
+class ModelSnapshot(BaseModel):
+    """The LLM model of the pinned agent (ai-provider ``ModelConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    model_identifier: str
+    # Opaque JSON string of provider-specific model parameters (ai-provider
+    # ``modelConfig``; not named ``model_config``, which Pydantic reserves).
+    model_params: str = ""
+    communication_mode: str = ""
+
+
+class SkillSnapshot(BaseModel):
+    """A scaffold skill of the pinned agent (ai-provider ``SkillConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    instruction: str = ""
+    position: int = 0
+    source: str = ""
+
+
 class AgentConfigSnapshot(BaseModel):
     """The agent configuration pinned for one voice session.
 
@@ -67,6 +101,10 @@ class AgentConfigSnapshot(BaseModel):
     # Pinned voice language (``voice.languageCode``); "" when the configuration
     # does not specify one, so speech falls back to the configured default.
     language_code: str = ""
+    agent_name: str = ""
+    provider: ProviderSnapshot | None = None
+    model: ModelSnapshot | None = None
+    skills: list[SkillSnapshot] = Field(default_factory=list)
 
 
 class AgentToolSnapshot(BaseModel):
@@ -76,6 +114,7 @@ class AgentToolSnapshot(BaseModel):
     server_name: str
     server_url: str = ""
     tool_description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class VoiceEntryKind(StrEnum):

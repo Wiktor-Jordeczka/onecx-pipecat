@@ -12,8 +12,6 @@ from onecx_pipecat.adapters import (
     HttpMcpAdapter,
     HttpPermissionAdapter,
     InMemoryPersistence,
-    InMemorySttAdapter,
-    InMemoryTtsAdapter,
     JwtAuthAdapter,
 )
 from onecx_pipecat.adapters import auth as auth_module
@@ -50,15 +48,6 @@ _PRINCIPAL = Principal(subject="user-1", tenant_id="local")
 
 def _client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-
-async def test_stt_tts_are_deterministic():
-    stt = InMemorySttAdapter()
-    tts = InMemoryTtsAdapter()
-    text = await stt.transcribe(b"0" * 1024)
-    assert text == "in-memory transcript"
-    audio = await tts.synthesize(text)
-    assert audio == text.encode("utf-8")
 
 
 async def test_persistence_round_trip():
@@ -335,6 +324,31 @@ _AGENT_CONFIGURATION = {
     "agent": {"id": "agent-1", "name": "Helper"},
     "voice": {"voiceEnabled": True, "languageCode": "en"},
     "scaffold": {"id": "s1", "name": "default", "systemPrompt": "be brief"},
+    "provider": {
+        "id": "p1",
+        "name": "OpenAI",
+        "type": "OPENAI",
+        "llmUrl": "https://llm.example/v1",
+        "authMode": "API_KEY",
+        "credentialRef": "credential://provider/p1/api-key",
+    },
+    "model": {
+        "id": "m1",
+        "name": "gpt",
+        "modelIdentifier": "gpt-4o-mini",
+        "modelConfig": '{"temperature": 0.2}',
+        "communicationMode": "CHAT",
+    },
+    "skills": [
+        {
+            "id": "k1",
+            "name": "Refund",
+            "description": "Refund policy",
+            "instruction": "Check the order first.",
+            "position": 1,
+            "source": "TENANT",
+        }
+    ],
     "mcpServers": [
         {
             "id": "srv-1",
@@ -377,6 +391,16 @@ async def test_agent_config_parses_ai_provider_configuration():
     assert snap.agent_id == "agent-1"
     assert snap.schema_version == "1"
     assert snap.system_prompt == "be brief"
+    assert snap.agent_name == "Helper"
+    assert snap.provider.type == "OPENAI"
+    assert snap.provider.llm_url == "https://llm.example/v1"
+    assert snap.provider.auth_mode == "API_KEY"
+    assert snap.provider.credential_ref == "credential://provider/p1/api-key"
+    assert snap.model.model_identifier == "gpt-4o-mini"
+    assert snap.model.model_params == '{"temperature": 0.2}'
+    assert [(s.name, s.instruction, s.position, s.source) for s in snap.skills] == [
+        ("Refund", "Check the order first.", 1, "TENANT")
+    ]
     server = snap.mcp_servers[0]
     assert (server.id, server.name, server.url) == ("srv-1", "crm", "https://crm.example/mcp")
     assert server.credential_ref == "crm-cred"
@@ -397,6 +421,34 @@ async def test_agent_config_without_voice_enabled_fails_closed(voice):
 async def test_agent_config_error_status_fails(status):
     with pytest.raises(AgentConfigError):
         await _pin(status, {})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"provider": None},
+        {"provider": {"id": "p1"}},
+        {"provider": {"type": "BEDROCK"}},
+        {"provider": "x"},
+        {"model": None},
+        {"model": {"modelIdentifier": "  "}},
+        {"model": "x"},
+        {"skills": "x"},
+        {"skills": ["not-a-dict"]},
+        {"skills": [{"name": "a", "position": "first"}]},
+    ],
+)
+async def test_agent_config_missing_or_invalid_llm_fails_closed(override):
+    with pytest.raises(AgentConfigError):
+        await _pin(200, {**_AGENT_CONFIGURATION, **override})
+
+
+async def test_agent_config_provider_type_is_case_insensitive_and_skills_optional():
+    body = {**_AGENT_CONFIGURATION, "provider": {"type": "ollama"}}
+    body.pop("skills")
+    snap = await _pin(200, body)
+    assert snap.provider.type == "OLLAMA"
+    assert snap.skills == []
 
 
 async def test_agent_config_server_without_url_is_invalid():

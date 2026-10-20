@@ -7,8 +7,9 @@ any field without code changes.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,8 @@ class ChatSettings(BaseSettings):
 
     # Base URL of onecx-chat-svc, used to load a chat by id as the user.
     base_url: str = "http://onecx-chat-svc:8080"
+    # Newest chat messages loaded into the LLM context at session start.
+    history_max_messages: int = 50
 
 
 class AwsSpeechProfile(BaseModel):
@@ -81,6 +84,8 @@ class PersistenceSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERSISTENCE__")
 
     backend: str = "inmemory"
+    # "chat" saves to onecx-chat-svc; "inmemory" is for tests and local runs.
+    backend: Literal["chat", "inmemory"] = "chat"
     max_entries_per_session: int = 512
 
 
@@ -105,6 +110,30 @@ class McpSettings(BaseSettings):
     timeout_seconds: float = 30.0
 
 
+class CredentialsSettings(BaseSettings):
+    """Operator-provisioned secrets, keyed by the ``credentialRef`` of the agent configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="ONECX_CREDENTIALS__")
+
+    # credentialRef (e.g. ``credential://provider/{id}/api-key``) -> secret.
+    refs: dict[str, SecretStr] = Field(default_factory=dict)
+
+
+class LlmSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ONECX_LLM__")
+
+    # Test/local-dev only: ``inmemory`` replaces the agent's provider with a
+    # deterministic fake. Empty (the default) keeps production fail-closed.
+    provider_override: str = ""
+
+
+class PipelineSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ONECX_PIPELINE__")
+
+    # Seconds without bot/user speech activity before the pipeline ends; None disables.
+    idle_timeout_secs: float | None = None
+
+
 class Settings(BaseSettings):
     """Root configuration for the Pipecat application.
 
@@ -127,6 +156,9 @@ class Settings(BaseSettings):
     persistence: PersistenceSettings = Field(default_factory=PersistenceSettings)
     permission: PermissionSettings = Field(default_factory=PermissionSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
+    credentials: CredentialsSettings = Field(default_factory=CredentialsSettings)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
 
 
 @lru_cache

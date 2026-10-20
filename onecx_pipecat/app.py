@@ -47,31 +47,22 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
 
         await websocket.accept()
         session = VoiceSession(uuid4().hex, container)
-        send_lock = asyncio.Lock()
 
         async def send(events: list[Event]) -> None:
-            async with send_lock:
-                for event in events:
-                    await websocket.send_json(event.model_dump())
-
-        # Voice-turn events stream out of the background turn (captions, audio,
-        # completion) one at a time, not as a batch; route them to the socket.
-        async def stream(event: Event) -> None:
-            await send([event])
-
-        session.set_event_sink(stream)
+            for event in events:
+                await websocket.send_json(event.model_dump())
 
         async def watch_expiry() -> None:
             # An idle session must end at token expiry, not only when audio arrives.
             while True:
                 await asyncio.sleep(expiry_check_seconds)
                 if events := session.check_expiry():
-                    await send(events)
-                    await websocket.close(code=_WS_POLICY_VIOLATION)
+                    await session.end_pipeline(events, _WS_POLICY_VIOLATION)
                     return
 
-        watcher = asyncio.create_task(watch_expiry())
+        watcher: asyncio.Task | None = None
         try:
+            # Handshake: only a valid ``start_session`` moves on to the pipeline.
             while True:
                 raw = await websocket.receive_text()
                 try:
@@ -80,22 +71,23 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
                     payload = None
                 command = decode_command(payload) if isinstance(payload, dict) else None
                 if command is None:
-                    # The first message must be a valid ``start_session``; an
-                    # invalid or unknown command is reported and ignored.
                     await send([ErrorEvent(code="bad_command", message="malformed command")])
                     continue
                 await send(await session.dispatch(command))
-                if session.state is SessionState.CLOSED:
-                    if session.start_failed:
-                        await websocket.close(code=_WS_POLICY_VIOLATION)
+                if session.state is SessionState.READY:
                     break
+                if session.state is SessionState.CLOSED:
+                    await websocket.close(
+                        code=_WS_POLICY_VIOLATION if session.start_failed else 1000
+                    )
+                    return
+            watcher = asyncio.create_task(watch_expiry())
+            await session.run_pipeline(websocket)
         except WebSocketDisconnect:
             return
         finally:
-            # Stop or disconnect ends the run: release the turn's pipeline and
-            # adapter resources (a reconnect starts a new session). A clean
-            # ``stop`` already released the turn, and ``release`` is idempotent.
             await session.release()
-            watcher.cancel()
+            if watcher is not None:
+                watcher.cancel()
 
     return app

@@ -8,11 +8,9 @@ from onecx_pipecat.adapters import (
     AgentConfigAdapter,
     AuthAdapter,
     ChatAdapter,
-    InMemoryPersistence,
+    ConversationPersistence,
     McpAdapter,
     PermissionAdapter,
-    SttAdapter,
-    TtsAdapter,
 )
 from onecx_pipecat.adapters.factory import (
     build_agent_config,
@@ -22,10 +20,9 @@ from onecx_pipecat.adapters.factory import (
     build_permission,
     build_persistence,
     build_service_auth,
-    build_stt,
-    build_tts,
 )
 from onecx_pipecat.config import Settings
+from onecx_pipecat.services.credentials import CredentialResolver
 
 
 @dataclass(frozen=True)
@@ -53,9 +50,8 @@ class AppContainer:
         self.auth: AuthAdapter = build_auth(self.settings, service_auth)
         self.agent_config: AgentConfigAdapter = build_agent_config(self.settings, service_auth)
         self.chat: ChatAdapter = build_chat(self.settings, service_auth)
-        self.stt: SttAdapter = build_stt(self.settings)
-        self.tts: TtsAdapter = build_tts(self.settings)
-        self.persistence: InMemoryPersistence = build_persistence(self.settings)
+        self.credentials = CredentialResolver(self.settings.credentials)
+        self.persistence: ConversationPersistence = build_persistence(self.settings, service_auth)
         self.permission: PermissionAdapter = build_permission(self.settings, service_auth)
         self.mcp: McpAdapter = build_mcp(self.settings)
 
@@ -64,8 +60,8 @@ class AppContainer:
             auth=_name(self.auth),
             agent_config=_name(self.agent_config),
             chat=_name(self.chat),
-            stt=_name(self.stt),
-            tts=_name(self.tts),
+            stt=self.settings.speech.stt_provider,
+            tts=self.settings.speech.tts_provider,
             persistence=_name(self.persistence),
             permission=_name(self.permission),
             mcp=_name(self.mcp),

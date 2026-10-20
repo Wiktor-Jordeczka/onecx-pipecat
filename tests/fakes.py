@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,7 +10,8 @@ from onecx_pipecat.adapters.agent_config import AgentConfigError
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.chat import ChatAccessError
 from onecx_pipecat.adapters.mcp import McpDiscovery, McpToolResult
-from onecx_pipecat.config import Settings
+from onecx_pipecat.adapters.persistence import PersistenceError
+from onecx_pipecat.config import LlmSettings, Settings
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
@@ -135,7 +135,7 @@ def fake_container(
     *, token: str = "tok-user", chat_id: str = "chat-1", agent_id: str = "onecx-agent"
 ) -> AppContainer:
     """An app container with fakes for every OneCX boundary and one usable user/chat/agent."""
-    container = AppContainer(Settings())
+    container = AppContainer(Settings(llm=LlmSettings(provider_override="inmemory")))
     auth, chat, agent_config = FakeAuth(), FakeChat(), FakeAgentConfig()
     auth.seed(token, subject="user-1", tenant_id="local", roles=["voice"])
     chat.register(chat_id, topic="general")
@@ -147,70 +147,8 @@ def fake_container(
     container.agent_config = agent_config
     container.permission = FakePermission()
     container.mcp = FakeMcp()
+    container.persistence = FakePersistence()  # type: ignore[assignment]
     return container
-
-
-# --- controlled streaming speech doubles + event collector -----------------
-#
-# These drive the *streaming* speech adapters behind a ``VoiceTurn`` (partial/
-# final transcripts, incremental audio, barge-in, and injected failures). The
-# ``sleep`` yields let a concurrent barge-in land mid-stream.
-
-
-class FakeStt:
-    """Yields ``(text, is_final)`` transcript frames for a controlled stream."""
-
-    def __init__(
-        self,
-        frames: list[tuple[str, bool]] | None = None,
-        *,
-        sleep: float = 0.0,
-        fail: bool = False,
-    ) -> None:
-        self.frames = frames if frames is not None else [("hello", False), ("hello world", True)]
-        self.sleep = sleep
-        self.fail = fail
-
-    def stream(self, audio_bytes: bytes) -> AsyncIterator[tuple[str, bool]]:
-        async def _stream():
-            if not audio_bytes:
-                return
-            if self.fail:
-                raise RuntimeError("stt boom")
-            for text, is_final in self.frames:
-                if self.sleep:
-                    await asyncio.sleep(self.sleep)
-                yield text, is_final
-
-        return _stream()
-
-
-class FakeTts:
-    """Yields audio chunks for a controlled stream."""
-
-    def __init__(
-        self,
-        chunks: list[bytes] | None = None,
-        *,
-        sleep: float = 0.0,
-        fail: bool = False,
-    ) -> None:
-        self.chunks = chunks if chunks is not None else [b"a", b"b", b"c"]
-        self.sleep = sleep
-        self.fail = fail
-
-    def stream(self, text: str) -> AsyncIterator[bytes]:
-        async def _stream():
-            if not text:
-                return
-            if self.fail:
-                raise RuntimeError("tts boom")
-            for chunk in self.chunks:
-                if self.sleep:
-                    await asyncio.sleep(self.sleep)
-                yield chunk
-
-        return _stream()
 
 
 class FakePersistence:
@@ -220,8 +158,19 @@ class FakePersistence:
         self.entries: list[VoiceEntry] = []
         self.fail_human = fail_human
         self.fail_assistant = fail_assistant
+        self.appended_with: list[tuple[str, str, str]] = []
+        self.history_messages: list[dict[str, str]] = []
+        self.fail_history = False
 
-    async def append(self, session_id: str, entry: VoiceEntry) -> str:
+    async def append(
+        self,
+        session_id: str,
+        entry: VoiceEntry,
+        *,
+        apm_principal_token: str = "",
+        user_id: str = "",
+    ) -> str:
+        self.appended_with.append((session_id, apm_principal_token, user_id))
         if (entry.kind.value == "HUMAN" and self.fail_human) or (
             entry.kind.value == "ASSISTANT" and self.fail_assistant
         ):
@@ -233,16 +182,9 @@ class FakePersistence:
     async def list_entries(self, session_id: str) -> list[VoiceEntry]:
         return list(self.entries)
 
-
-class Collector:
-    """Collects the events a turn streams through its sink, in order."""
-
-    def __init__(self) -> None:
-        self.events: list[Any] = []
-
-    def __call__(self, event: Any) -> None:
-        self.events.append(event)
-
-    @property
-    def kinds(self) -> list[str]:
-        return [e.kind for e in self.events]
+    async def history(
+        self, chat_id: str, *, apm_principal_token: str = "", limit: int = 50
+    ) -> list[dict[str, str]]:
+        if self.fail_history:
+            raise PersistenceError("history boom")
+        return self.history_messages[-limit:]

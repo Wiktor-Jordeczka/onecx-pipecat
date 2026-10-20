@@ -1,18 +1,23 @@
-"""Transport-neutral voice-session protocol.
+"""Voice-session wire protocol (version 2).
+
+The handshake commands (``start_session``) are plain JSON text messages handled
+by the endpoint before the Pipecat pipeline starts. Once the session is READY
+the socket belongs to the pipeline's ``OnecxFrameSerializer``,
+which additionally understands ``audio``, ``user_started_speaking`` and
+``user_stopped_speaking`` inbound and the streaming events below outbound.
 
 Commands are what a client asks a session to do; events are what the session
-emits back. The vocabulary is intentionally independent of any wire transport
-so the WebSocket carrier can later be replaced (for example with WebRTC)
-without changing session behavior.
+emits back. The vocabulary is independent of the carrier so the WebSocket can
+later be replaced (for example with WebRTC) without changing session behavior.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 from typing import Literal
 
 from pydantic import BaseModel
+
+PROTOCOL_VERSION = 2
 
 
 class StartSession(BaseModel):
@@ -39,20 +44,13 @@ class RefreshToken(BaseModel):
     authorization: str = ""
 
 
-class ClientAudio(BaseModel):
-    """A finalized chunk of captured microphone audio."""
-
-    type: Literal["audio"] = "audio"
-    audio: bytes = b""
-
-
 class StopSession(BaseModel):
     """End the voice session and return to typed chat."""
 
     type: Literal["stop"] = "stop"
 
 
-Command = StartSession | ClientAudio | StopSession | RefreshToken
+Command = StartSession | StopSession | RefreshToken
 
 
 class SessionReady(BaseModel):
@@ -60,24 +58,41 @@ class SessionReady(BaseModel):
     session_id: str
     agent_id: str
     schema_version: str
+    protocol_version: int = PROTOCOL_VERSION
 
 
 class Transcript(BaseModel):
     kind: Literal["transcript"] = "transcript"
     text: str
-    state: str
+    state: Literal["PARTIAL", "FINAL"]
 
 
 class AssistantText(BaseModel):
+    """A streamed chunk of the assistant's spoken text."""
+
     kind: Literal["assistant_text"] = "assistant_text"
     text: str
-    status: str
 
 
 class AssistantAudio(BaseModel):
     kind: Literal["assistant_audio"] = "assistant_audio"
     audio: str
-    state: str
+    sample_rate: int
+    num_channels: int = 1
+
+
+class BotStartedSpeaking(BaseModel):
+    kind: Literal["bot_started_speaking"] = "bot_started_speaking"
+
+
+class BotStoppedSpeaking(BaseModel):
+    kind: Literal["bot_stopped_speaking"] = "bot_stopped_speaking"
+
+
+class Interrupted(BaseModel):
+    """The user barged in; the client must drop any queued assistant audio."""
+
+    kind: Literal["interrupted"] = "interrupted"
 
 
 class TurnComplete(BaseModel):
@@ -112,6 +127,9 @@ Event = (
     | Transcript
     | AssistantText
     | AssistantAudio
+    | BotStartedSpeaking
+    | BotStoppedSpeaking
+    | Interrupted
     | TurnComplete
     | ErrorEvent
     | DegradedCapability
@@ -162,15 +180,6 @@ def decode_command(raw: dict) -> Command | None:
                 apm_principal_token=apm_principal_token,
                 authorization=_optional_str(raw, "authorization"),
             )
-        case "audio":
-            encoded = raw.get("audio", "")
-            if not isinstance(encoded, str):
-                return None
-            try:
-                audio = base64.b64decode(encoded, validate=True) if encoded else b""
-            except (binascii.Error, ValueError):
-                return None
-            return ClientAudio(audio=audio)
         case "stop":
             return StopSession()
         case _:

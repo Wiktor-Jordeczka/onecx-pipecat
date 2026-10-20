@@ -14,7 +14,7 @@ async def test_healthz_returns_ok_with_adapter_summary():
     body = resp.json()
     assert body["status"] == "OK"
     assert body["app"] == "onecx-pipecat"
-    assert body["adapters"]["stt"] == "InMemorySttAdapter"
+    assert body["adapters"]["stt"] == "inmemory"
     assert body["adapters"]["permission"] == "HttpPermissionAdapter"
     assert body["adapters"]["mcp"] == "HttpMcpAdapter"
     assert body["pipecat_version"]

@@ -1,19 +1,19 @@
-import asyncio
+import pytest
 
 from onecx_pipecat.config import Settings, SpeechSettings
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
     McpServerSnapshot,
+    ModelSnapshot,
     PermissionAction,
     Principal,
+    ProviderSnapshot,
     ToolRule,
-    VoiceEntryKind,
-    VoiceEntryStatus,
 )
-from onecx_pipecat.protocol import ClientAudio, RefreshToken, StartSession, StopSession
+from onecx_pipecat.protocol import RefreshToken, StartSession, StopSession
 from onecx_pipecat.session import SessionState, VoiceSession
-from tests.fakes import Collector, FakeAgentConfig, FakeStt, FakeTts, fake_container
+from tests.fakes import FakeAgentConfig, fake_container
 
 
 def _container() -> AppContainer:
@@ -217,17 +217,6 @@ async def test_refresh_before_start_is_rejected():
     assert events[0].code == "illegal_state"
 
 
-async def test_expired_tokens_end_session_with_typed_error():
-    container = _container()
-    session = _session(container)
-    await session.dispatch(_start())
-    container.auth.mark_expired("tok-user")
-    events = await session.dispatch(ClientAudio(audio=b"pcm"))
-    assert [e.kind for e in events] == ["error", "session_closed"]
-    assert events[0].code == "token_expired"
-    assert session.state is SessionState.CLOSED
-
-
 async def test_expiry_is_detected_without_audio():
     container = _container()
     session = _session(container)
@@ -271,57 +260,12 @@ async def test_tools_cannot_be_invoked_before_start():
     assert not (await session.invoke_tool("docs", "read")).ok
 
 
-async def test_audio_before_start_is_rejected():
-    session = _session(_container())
-    events = await session.dispatch(ClientAudio(audio=b"pcm"))
-    assert events[0].kind == "error"
-    assert events[0].code == "illegal_state"
-
-
 async def test_second_start_is_rejected():
     session = _session(_container())
     await session.dispatch(_start())
     events = await session.dispatch(_start())
     assert events[0].kind == "error"
     assert events[0].code == "illegal_state"
-
-
-async def test_audio_turn_emits_transcript_text_audio_and_completion():
-    container = _container()
-    session = _session(container)
-    await session.dispatch(_start())
-    # A turn streams its events through the sink (captions + audio arrive as
-    # they are produced); ``dispatch`` returns no batch for an audio turn.
-    streamed: list = []
-    session.set_event_sink(streamed.append)
-    dispatched = await session.dispatch(ClientAudio(audio=b"pcm"))
-    assert dispatched == []
-    await session.wait_for_turn()
-    kinds = [e.kind for e in streamed]
-    assert kinds == ["transcript", "assistant_text", "assistant_audio", "turn_complete"]
-    assert streamed[0].state == "FINAL"
-    assert streamed[1].status == "COMPLETED"
-
-
-async def test_empty_transcript_stays_ephemeral():
-    session = _session(_container())
-    await session.dispatch(_start())
-    events = await session.dispatch(ClientAudio(audio=b""))
-    assert events == []
-    # The turn still ran (noise-only input); settle it so its pipeline is released.
-    await session.wait_for_turn()
-
-
-async def test_turn_persists_human_and_assistant_entries():
-    container = _container()
-    session = _session(container)
-    await session.dispatch(_start())
-    session.set_event_sink(lambda _event: None)
-    await session.dispatch(ClientAudio(audio=b"pcm"))
-    await session.wait_for_turn()
-    entries = await container.persistence.list_entries("sess-1")
-    kinds = [entry.kind for entry in entries]
-    assert kinds == [VoiceEntryKind.HUMAN, VoiceEntryKind.ASSISTANT]
 
 
 async def test_stop_closes_the_session():
@@ -332,54 +276,67 @@ async def test_stop_closes_the_session():
     assert events[0].kind == "session_closed"
 
 
-async def test_a_second_utterance_barges_in_on_the_inflight_turn():
-    """A new utterance interrupts the in-flight assistant output before turning."""
+async def test_start_without_provider_fails_closed_when_not_overridden():
     container = _container()
+    container.settings = Settings()
     session = _session(container)
-    await session.dispatch(_start())
-    sink = Collector()
-    session.set_event_sink(sink)
-    # A slow TTS stream so the first turn is still speaking when the second lands.
-    session._build_speech = lambda: (FakeStt(), FakeTts([b"a", b"b", b"c"], sleep=0.05))
-    assert await session.dispatch(ClientAudio(audio=b"first")) == []
-    await asyncio.sleep(0.05)  # let the first turn start speaking
-    assert await session.dispatch(ClientAudio(audio=b"second")) == []
-    await session.wait_for_turn()
-
-    # The interrupted first turn persisted its assistant entry as INTERRUPTED;
-    # the second turn completed. No completion event fired from the interrupted
-    # turn's unfinished audio (it finalized on barge-in instead).
-    entries = await container.persistence.list_entries("sess-1")
-    statuses = [e.status for e in entries if e.kind is VoiceEntryKind.ASSISTANT]
-    assert VoiceEntryStatus.INTERRUPTED in statuses and VoiceEntryStatus.COMPLETED in statuses
+    events = await session.dispatch(_start())
+    _assert_start_rejected(session, events, "config_unavailable")
 
 
-async def test_unsupported_language_is_a_typed_error_not_a_turn():
-    """A pinned language with no AWS profile is reported, not spoken over."""
+async def test_start_with_unresolvable_credential_fails_closed():
+    container = _container()
+    container.settings = Settings()
+    container.agent_config.register(
+        AgentConfigSnapshot(
+            agent_id="onecx-agent",
+            schema_version="1",
+            provider=ProviderSnapshot(
+                id="p",
+                name="p",
+                type="OPENAI",
+                llm_url="",
+                auth_mode="API_KEY",
+                credential_ref="missing",
+            ),
+            model=ModelSnapshot(
+                id="m", name="m", model_identifier="gpt", communication_mode="HTTP"
+            ),
+        )
+    )
+    session = _session(container)
+    events = await session.dispatch(_start())
+    _assert_start_rejected(session, events, "config_unavailable")
+
+
+async def test_unsupported_language_fails_closed_at_start():
     container = _container()
     container.settings = Settings(
+        llm=container.settings.llm,
         speech=SpeechSettings(
             stt_provider="aws",
             tts_provider="aws",
             default_language="en",
             aws_profiles={"en": {"transcribe_language": "en-US", "polly_voice": "Joanna"}},
-        )
+        ),
     )
-    # Pin a configuration whose language has no configured profile.
     container.agent_config.register(
         AgentConfigSnapshot(
-            agent_id="onecx-agent",
-            schema_version="1",
-            system_prompt="be brief",
-            language_code="fr",
+            agent_id="onecx-agent", schema_version="1", system_prompt="x", language_code="fr"
         )
     )
     session = _session(container)
-    await session.dispatch(_start())
-    session.set_event_sink(lambda _event: None)
-    events = await session.dispatch(ClientAudio(audio=b"pcm"))
-    assert [e.kind for e in events] == ["error"]
-    assert events[0].code == "unsupported_language"
-    # No turn was started, so nothing is streaming and nothing was persisted.
-    assert session._active_turn is None
-    assert await container.persistence.list_entries("sess-1") == []
+    events = await session.dispatch(_start())
+    _assert_start_rejected(session, events, "unsupported_language")
+
+
+async def test_release_without_a_pipeline_is_a_noop():
+    session = _session(_container())
+    await session.release()
+    await session.release()
+
+
+async def test_run_pipeline_requires_a_started_session():
+    session = _session(_container())
+    with pytest.raises(RuntimeError):
+        await session.run_pipeline(None)  # type: ignore[arg-type]
