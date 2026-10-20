@@ -1,3 +1,6 @@
+import asyncio
+
+from onecx_pipecat.config import Settings, SpeechSettings
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
@@ -6,10 +9,11 @@ from onecx_pipecat.models import (
     Principal,
     ToolRule,
     VoiceEntryKind,
+    VoiceEntryStatus,
 )
 from onecx_pipecat.protocol import ClientAudio, RefreshToken, StartSession, StopSession
 from onecx_pipecat.session import SessionState, VoiceSession
-from tests.fakes import FakeAgentConfig, fake_container
+from tests.fakes import Collector, FakeAgentConfig, FakeStt, FakeTts, fake_container
 
 
 def _container() -> AppContainer:
@@ -286,11 +290,17 @@ async def test_audio_turn_emits_transcript_text_audio_and_completion():
     container = _container()
     session = _session(container)
     await session.dispatch(_start())
-    events = await session.dispatch(ClientAudio(audio=b"pcm"))
-    kinds = [e.kind for e in events]
+    # A turn streams its events through the sink (captions + audio arrive as
+    # they are produced); ``dispatch`` returns no batch for an audio turn.
+    streamed: list = []
+    session.set_event_sink(streamed.append)
+    dispatched = await session.dispatch(ClientAudio(audio=b"pcm"))
+    assert dispatched == []
+    await session.wait_for_turn()
+    kinds = [e.kind for e in streamed]
     assert kinds == ["transcript", "assistant_text", "assistant_audio", "turn_complete"]
-    assert events[0].state == "FINAL"
-    assert events[1].status == "COMPLETED"
+    assert streamed[0].state == "FINAL"
+    assert streamed[1].status == "COMPLETED"
 
 
 async def test_empty_transcript_stays_ephemeral():
@@ -298,13 +308,17 @@ async def test_empty_transcript_stays_ephemeral():
     await session.dispatch(_start())
     events = await session.dispatch(ClientAudio(audio=b""))
     assert events == []
+    # The turn still ran (noise-only input); settle it so its pipeline is released.
+    await session.wait_for_turn()
 
 
 async def test_turn_persists_human_and_assistant_entries():
     container = _container()
     session = _session(container)
     await session.dispatch(_start())
+    session.set_event_sink(lambda _event: None)
     await session.dispatch(ClientAudio(audio=b"pcm"))
+    await session.wait_for_turn()
     entries = await container.persistence.list_entries("sess-1")
     kinds = [entry.kind for entry in entries]
     assert kinds == [VoiceEntryKind.HUMAN, VoiceEntryKind.ASSISTANT]
@@ -316,3 +330,56 @@ async def test_stop_closes_the_session():
     events = await session.dispatch(StopSession())
     assert session.state is SessionState.CLOSED
     assert events[0].kind == "session_closed"
+
+
+async def test_a_second_utterance_barges_in_on_the_inflight_turn():
+    """A new utterance interrupts the in-flight assistant output before turning."""
+    container = _container()
+    session = _session(container)
+    await session.dispatch(_start())
+    sink = Collector()
+    session.set_event_sink(sink)
+    # A slow TTS stream so the first turn is still speaking when the second lands.
+    session._build_speech = lambda: (FakeStt(), FakeTts([b"a", b"b", b"c"], sleep=0.05))
+    assert await session.dispatch(ClientAudio(audio=b"first")) == []
+    await asyncio.sleep(0.05)  # let the first turn start speaking
+    assert await session.dispatch(ClientAudio(audio=b"second")) == []
+    await session.wait_for_turn()
+
+    # The interrupted first turn persisted its assistant entry as INTERRUPTED;
+    # the second turn completed. No completion event fired from the interrupted
+    # turn's unfinished audio (it finalized on barge-in instead).
+    entries = await container.persistence.list_entries("sess-1")
+    statuses = [e.status for e in entries if e.kind is VoiceEntryKind.ASSISTANT]
+    assert VoiceEntryStatus.INTERRUPTED in statuses and VoiceEntryStatus.COMPLETED in statuses
+
+
+async def test_unsupported_language_is_a_typed_error_not_a_turn():
+    """A pinned language with no AWS profile is reported, not spoken over."""
+    container = _container()
+    container.settings = Settings(
+        speech=SpeechSettings(
+            stt_provider="aws",
+            tts_provider="aws",
+            default_language="en",
+            aws_profiles={"en": {"transcribe_language": "en-US", "polly_voice": "Joanna"}},
+        )
+    )
+    # Pin a configuration whose language has no configured profile.
+    container.agent_config.register(
+        AgentConfigSnapshot(
+            agent_id="onecx-agent",
+            schema_version="1",
+            system_prompt="be brief",
+            language_code="fr",
+        )
+    )
+    session = _session(container)
+    await session.dispatch(_start())
+    session.set_event_sink(lambda _event: None)
+    events = await session.dispatch(ClientAudio(audio=b"pcm"))
+    assert [e.kind for e in events] == ["error"]
+    assert events[0].code == "unsupported_language"
+    # No turn was started, so nothing is streaming and nothing was persisted.
+    assert session._active_turn is None
+    assert await container.persistence.list_entries("sess-1") == []

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import AsyncIterator, Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,7 @@ from onecx_pipecat.models import (
     McpServerSnapshot,
     Principal,
     ToolProposal,
+    VoiceEntry,
 )
 
 
@@ -146,3 +148,101 @@ def fake_container(
     container.permission = FakePermission()
     container.mcp = FakeMcp()
     return container
+
+
+# --- controlled streaming speech doubles + event collector -----------------
+#
+# These drive the *streaming* speech adapters behind a ``VoiceTurn`` (partial/
+# final transcripts, incremental audio, barge-in, and injected failures). The
+# ``sleep`` yields let a concurrent barge-in land mid-stream.
+
+
+class FakeStt:
+    """Yields ``(text, is_final)`` transcript frames for a controlled stream."""
+
+    def __init__(
+        self,
+        frames: list[tuple[str, bool]] | None = None,
+        *,
+        sleep: float = 0.0,
+        fail: bool = False,
+    ) -> None:
+        self.frames = frames if frames is not None else [("hello", False), ("hello world", True)]
+        self.sleep = sleep
+        self.fail = fail
+
+    def stream(self, audio_bytes: bytes) -> AsyncIterator[tuple[str, bool]]:
+        async def _stream():
+            if not audio_bytes:
+                return
+            if self.fail:
+                raise RuntimeError("stt boom")
+            for text, is_final in self.frames:
+                if self.sleep:
+                    await asyncio.sleep(self.sleep)
+                yield text, is_final
+
+        return _stream()
+
+
+class FakeTts:
+    """Yields audio chunks for a controlled stream."""
+
+    def __init__(
+        self,
+        chunks: list[bytes] | None = None,
+        *,
+        sleep: float = 0.0,
+        fail: bool = False,
+    ) -> None:
+        self.chunks = chunks if chunks is not None else [b"a", b"b", b"c"]
+        self.sleep = sleep
+        self.fail = fail
+
+    def stream(self, text: str) -> AsyncIterator[bytes]:
+        async def _stream():
+            if not text:
+                return
+            if self.fail:
+                raise RuntimeError("tts boom")
+            for chunk in self.chunks:
+                if self.sleep:
+                    await asyncio.sleep(self.sleep)
+                yield chunk
+
+        return _stream()
+
+
+class FakePersistence:
+    """A recording persistence that can be made to fail on the human/assistant write."""
+
+    def __init__(self, *, fail_human: bool = False, fail_assistant: bool = False) -> None:
+        self.entries: list[VoiceEntry] = []
+        self.fail_human = fail_human
+        self.fail_assistant = fail_assistant
+
+    async def append(self, session_id: str, entry: VoiceEntry) -> str:
+        if (entry.kind.value == "HUMAN" and self.fail_human) or (
+            entry.kind.value == "ASSISTANT" and self.fail_assistant
+        ):
+            raise RuntimeError("persistence boom")
+        entry_id = f"{session_id}:{len(self.entries) + 1}"
+        self.entries.append(entry)
+        return entry_id
+
+    async def list_entries(self, session_id: str) -> list[VoiceEntry]:
+        return list(self.entries)
+
+
+class Collector:
+    """Collects the events a turn streams through its sink, in order."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def __call__(self, event: Any) -> None:
+        self.events.append(event)
+
+    @property
+    def kinds(self) -> list[str]:
+        return [e.kind for e in self.events]

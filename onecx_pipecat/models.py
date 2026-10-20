@@ -64,6 +64,9 @@ class AgentConfigSnapshot(BaseModel):
     schema_version: str
     system_prompt: str = ""
     mcp_servers: list[McpServerSnapshot] = Field(default_factory=list)
+    # Pinned voice language (``voice.languageCode``); "" when the configuration
+    # does not specify one, so speech falls back to the configured default.
+    language_code: str = ""
 
 
 class AgentToolSnapshot(BaseModel):
@@ -84,6 +87,19 @@ class VoiceEntryKind(StrEnum):
     TOOL_RESULT = "TOOL_RESULT"
 
 
+class VoiceEntryStatus(StrEnum):
+    """Terminal lifecycle state of a durable voice entry.
+
+    A voice entry is written exactly once, already in a terminal state
+    (``COMPLETED`` when the turn ran to its natural end, ``INTERRUPTED`` when
+    the user barged in and cut the assistant output short). Interim streaming
+    states are carried by the wire protocol, never by a persisted entry.
+    """
+
+    COMPLETED = "COMPLETED"
+    INTERRUPTED = "INTERRUPTED"
+
+
 class VoiceEntry(BaseModel):
     """A durable conversation entry (visible or hidden checkpoint)."""
 
@@ -91,6 +107,11 @@ class VoiceEntry(BaseModel):
     text: str
     hidden: bool = False
     idempotency_key: str | None = None
+    # Terminal state the entry was finalized in (see ``VoiceEntryStatus``).
+    status: VoiceEntryStatus = VoiceEntryStatus.COMPLETED
+    # The agent configuration version this entry was produced under; left empty
+    # for now — populating it from the pinned snapshot is tracked in #938.
+    agent_config_version: str = ""
 
 
 class PermissionDecision(BaseModel):

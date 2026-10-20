@@ -12,15 +12,21 @@ from onecx_pipecat.adapters.mcp import (
 from onecx_pipecat.adapters.permission import HttpPermissionAdapter, PermissionAdapter
 from onecx_pipecat.adapters.persistence import ConversationPersistence, InMemoryPersistence
 from onecx_pipecat.adapters.speech import (
+    AwsSttAdapter,
+    AwsTtsAdapter,
     InMemorySttAdapter,
     InMemoryTtsAdapter,
     SttAdapter,
     TtsAdapter,
+    UnsupportedLanguageError,
+    resolve_profile,
 )
 
 __all__ = [
     "AgentConfigAdapter",
     "AuthAdapter",
+    "AwsSttAdapter",
+    "AwsTtsAdapter",
     "ChatAdapter",
     "ChatAccessError",
     "ConversationPersistence",
@@ -38,4 +44,6 @@ __all__ = [
     "PermissionAdapter",
     "SttAdapter",
     "TtsAdapter",
+    "UnsupportedLanguageError",
+    "resolve_profile",
 ]

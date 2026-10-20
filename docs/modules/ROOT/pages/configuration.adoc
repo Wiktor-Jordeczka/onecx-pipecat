@@ -103,6 +103,23 @@ permission services (never to MCP servers).
 | `16000`
 | Expected audio sample rate in hertz.
 
+| `speech.region`
+| `us-east-1`
+| AWS region the Transcribe and Polly profiles live in (`aws` provider only).
+
+| `speech.default_language`
+| `en`
+| Fallback language when the pinned agent configuration does not specify one.
+A pinned language that is not configured in `speech.aws_profiles` is
+unsupported and produces a typed `unsupported_language` error.
+
+| `speech.aws_profiles`
+| `en` -> `{transcribe_language: "en-US", polly_voice: "Joanna"}`
+| Map of language code to its AWS speech profile, read only when the `aws`
+provider is selected. Each profile pairs an AWS Transcribe language code
+(`transcribe_language`) with an Amazon Polly voice (`polly_voice`, default
+`Joanna`), so one pinned language maps to both the STT and TTS deployments.
+
 | `persistence.backend`
 | `inmemory`
 | Persistence backend identifier.
@@ -149,9 +166,12 @@ and MCP — always use their real adapter (`JwtAuthAdapter`,
 run on: a token that cannot be verified against the issuer's JWKS, or a
 service call whose client-credentials token cannot be obtained, fails closed.
 
-Speech and persistence still use in-memory adapters because no real ones
-exist yet; `persistence.max_entries_per_session` is enforced by
-`InMemoryPersistence`, and `speech.*` is loaded but not yet read.
+Speech defaults to in-memory adapters because no deployment has selected the
+`aws` provider yet; the in-memory provider is a deterministic, language-agnostic
+echo. Selecting `stt_provider`/`tts_provider` to `aws` builds the real AWS
+adapters from `speech.region`, `speech.default_language`, and
+`speech.aws_profiles`. `persistence.max_entries_per_session` is enforced by
+`InMemoryPersistence`.
 
 Not yet read by any adapter: `agent_config.default_agent_id`,
 `agent_config.default_snapshot_version`, and `persistence.backend`.

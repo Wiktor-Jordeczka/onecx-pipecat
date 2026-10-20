@@ -65,10 +65,10 @@ Events are JSON objects with a `kind` field, emitted by the session.
 | `kind` | Meaning
 
 | `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `schema_version` (the pinned `AgentConfiguration.schemaVersion`).
-| `transcript` | Finalized speech recognition; carries `text` and `state`.
-| `assistant_text` | Assistant caption; carries `text` and `status`.
-| `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`COMPLETE` or `FAILED`).
-| `turn_complete` | The turn finished; carries the persisted assistant `entry_id`.
+| `transcript` | Speech recognition; carries `text` and `state` (`PARTIAL` or `FINAL`). Partial transcripts stream to the client and are never persisted; the final transcript is what creates the single durable human entry.
+| `assistant_text` | Assistant caption; carries `text` and `status` (`COMPLETED`).
+| `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`SYNTHESIZING` for each streamed chunk, `FAILED` when synthesis fails).
+| `turn_complete` | The turn reached a terminal state; carries the persisted assistant `entry_id`. Sent only after the assistant entry has been persisted.
 | `error` | A typed failure; carries `code` and `message`.
 | `session_closed` | The session ended; carries a `reason`.
 | `degraded_capability` | An MCP server could not be reached during the once-per-session tool discovery; the session continues without that server's tools.
@@ -89,6 +89,16 @@ applied.
 * `illegal_state` — a command arrived in the wrong state (audio before
 `start_session`, a second `start_session`, or a `refresh_token`/audio after
 the session closed).
+* `unsupported_language` — the speech provider is `aws` and the pinned language
+has no configured Transcribe/Polly profile; no turn is started and no history
+is written.
+* `stt_failed` — speech transcription failed; the turn ends with no human entry.
+* `tts_failed` — speech synthesis failed; the assistant caption is kept and the
+assistant entry is still written.
+* `persistence_failed` — the durable entry could not be written; no `turn_complete`
+is sent and no history is fabricated.
+* `turn_failed` — a voice turn raised unexpectedly; the session is left usable so
+the next utterance can start a new turn.
 
 == Behavior
 
@@ -96,10 +106,11 @@ the session closed).
 of code `config_unavailable`; the session is closed.
 * Audio before `start_session`, or a second `start_session`, is rejected with
 an `error` of code `illegal_state`.
-* Only finalized transcripts are persisted. Empty, noise-only input stays
-ephemeral and emits no events.
-* A completed turn persists one human entry and one assistant entry through the
-persistence adapter.
+* Only the final transcript is persisted. Partial transcripts stream to the
+client and are never persisted. Empty, noise-only input stays ephemeral and
+emits no events.
+* A turn persists at most one human entry and one assistant entry, each written
+once in a terminal state through the persistence adapter.
 * Speech synthesis failure keeps the assistant text and emits `assistant_audio`
 with `state` `FAILED`, so the answer is never discarded.
 * MCP tools are discovered once, when the session starts. The authenticated
@@ -117,3 +128,42 @@ token must belong to the same subject and tenant as the session's user,
 otherwise it is rejected with `principal_mismatch`. An
 expired token ends the session with an `error` of code `token_expired` and a
 `session_closed` event.
+
+== Turn lifecycle
+
+Each `audio` command drives one voice turn, run as a real Pipecat pipeline of a
+speech-recognition (STT) stage and a speech-synthesis (TTS) stage. The turn
+streams its output to the client through the transport in order and reaches a
+single terminal state:
+
+* The STT stage streams `transcript` events with `state` `PARTIAL` while
+recognizing and one with `state` `FINAL` for the finalized transcript. Partials
+are never persisted.
+* On the final transcript the turn persists the single durable human entry. If
+that write fails it emits `persistence_failed` and ends without fabricating the
+assistant turn or a completion event.
+* It then emits the assistant caption (`assistant_text`, `COMPLETED`) and
+streams the assistant audio incrementally, emitting one `assistant_audio`
+(`SYNTHESIZING`) per chunk.
+* On natural completion the assistant entry is written with status `COMPLETED`,
+and `turn_complete` is sent only after that write has succeeded.
+
+== Barge-in
+
+If the user speaks again while the assistant is still playing, the new utterance
+barges in on the in-flight turn. Barge-in is delivered through Pipecat's
+interruption broadcasting (the non-deprecated `broadcast_interruption`, which
+broadcasts an `InterruptionFrame`), so the in-flight TTS output is cancelled and
+the interrupted assistant entry is finalized with status `INTERRUPTED` from the
+text emitted so far. If nothing had been emitted yet, no assistant entry is
+written. The barge-in is final before the new turn begins, so the previous turn's
+pipeline and adapter resources are released while the session stays responsive.
+
+== Speech provider and language
+
+The speech provider and its language mapping come from configuration (see
+xref:configuration.adoc[Configuration]). When the provider is `aws`, the
+language pinned by the agent configuration at `start_session` is resolved to the
+deployment's AWS Transcribe language code and Amazon Polly voice. A language
+that has no configured profile produces a typed `unsupported_language` error; no
+turn is started and nothing is persisted.

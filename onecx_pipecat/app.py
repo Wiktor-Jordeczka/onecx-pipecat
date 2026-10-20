@@ -54,6 +54,13 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
                 for event in events:
                     await websocket.send_json(event.model_dump())
 
+        # Voice-turn events stream out of the background turn (captions, audio,
+        # completion) one at a time, not as a batch; route them to the socket.
+        async def stream(event: Event) -> None:
+            await send([event])
+
+        session.set_event_sink(stream)
+
         async def watch_expiry() -> None:
             # An idle session must end at token expiry, not only when audio arrives.
             while True:
@@ -85,6 +92,10 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
         except WebSocketDisconnect:
             return
         finally:
+            # Stop or disconnect ends the run: release the turn's pipeline and
+            # adapter resources (a reconnect starts a new session). A clean
+            # ``stop`` already released the turn, and ``release`` is idempotent.
+            await session.release()
             watcher.cancel()
 
     return app

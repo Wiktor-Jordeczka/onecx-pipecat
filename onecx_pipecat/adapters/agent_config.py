@@ -116,6 +116,8 @@ def _parse_configuration(body: Any, agent_id: str) -> AgentConfigSnapshot:
         schema_version=str(body.get("schemaVersion", "")),
         system_prompt=str(scaffold.get("systemPrompt") or ""),
         mcp_servers=servers,
+        # Pinned voice language; absent/empty falls back to the configured default.
+        language_code=str(voice.get("languageCode") or ""),
     )
 
 
