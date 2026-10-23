@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -154,7 +155,14 @@ def fake_container(
 class FakePersistence:
     """A recording persistence that can be made to fail on the human/assistant write."""
 
-    def __init__(self, *, fail_human: bool = False, fail_assistant: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_human: bool = False,
+        fail_assistant: bool = False,
+        human_delay: float = 0.0,
+    ) -> None:
+        self.human_delay = human_delay
         self.entries: list[VoiceEntry] = []
         self.fail_human = fail_human
         self.fail_assistant = fail_assistant
@@ -171,6 +179,8 @@ class FakePersistence:
         user_id: str = "",
     ) -> str:
         self.appended_with.append((session_id, apm_principal_token, user_id))
+        if entry.kind.value == "HUMAN" and self.human_delay:
+            await asyncio.sleep(self.human_delay)
         if (entry.kind.value == "HUMAN" and self.fail_human) or (
             entry.kind.value == "ASSISTANT" and self.fail_assistant
         ):

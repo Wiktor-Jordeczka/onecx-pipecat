@@ -84,7 +84,7 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
                     return
             watcher = asyncio.create_task(watch_expiry())
             await session.run_pipeline(websocket)
-        except (WebSocketDisconnect, asyncio.CancelledError):
+        except WebSocketDisconnect:
             return
         finally:
             await session.release()

@@ -24,46 +24,65 @@ if TYPE_CHECKING:
     )
 
 
+class _UserTurn:
+    """Outcome of one user turn's HUMAN save, awaited by the assistant turn that answers it."""
+
+    def __init__(self) -> None:
+        self.saved: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self.failed = False
+
+    def settle(self) -> None:
+        if not self.saved.done():
+            self.saved.set_result(None)
+
+
 def attach_persistence(
     user: LLMUserAggregator,
     assistant: LLMAssistantAggregator,
     save: Callable[[VoiceEntry], Awaitable[str]],
     emit: Emit,
 ) -> None:
-    human_failed = False
-    human_save_done: asyncio.Future[None] | None = None
+    # The turn being collected, and the turn the running assistant reply answers.
+    # They differ after a barge-in: the next user turn starts before the
+    # interrupted assistant turn stops.
+    current: _UserTurn | None = None
+    answering: _UserTurn | None = None
 
     @user.event_handler("on_user_turn_started")
-    async def on_user_turn_started(_aggregator, _strategy, _message) -> None:
-        nonlocal human_failed, human_save_done
-        human_failed = False
-        human_save_done = asyncio.get_running_loop().create_future()
+    async def on_user_turn_started(_aggregator, _strategy) -> None:
+        nonlocal current
+        current = _UserTurn()
 
     @user.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_aggregator, _strategy, message) -> None:
-        nonlocal human_failed, human_save_done
-        if human_save_done is None:
-            human_save_done = asyncio.get_running_loop().create_future()
+        nonlocal current
+        if current is None:
+            current = _UserTurn()
+        turn = current
         text = (message.content or "").strip()
         if not text:
-            human_save_done.set_result(None)
+            turn.settle()
             return
         try:
             await save(VoiceEntry(kind=VoiceEntryKind.HUMAN, text=text))
         except Exception as exc:  # noqa: BLE001 - reported as a typed error, no fabricated history
-            human_failed = True
+            turn.failed = True
             await emit(ErrorEvent(code="persistence_failed", message=f"human entry: {exc}"))
         finally:
-            if not human_save_done.done():
-                human_save_done.set_result(None)
+            turn.settle()
+
+    @assistant.event_handler("on_assistant_turn_started")
+    async def on_assistant_turn_started(_aggregator) -> None:
+        nonlocal answering
+        answering = current
 
     @assistant.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(_aggregator, message) -> None:
-        if human_save_done is not None:
-            await human_save_done
-        skip = human_failed
+        turn = answering or current
+        if turn is not None:
+            await turn.saved
         text = message.content.strip()
-        if skip or not text:
+        if (turn is not None and turn.failed) or not text:
             return
         status = VoiceEntryStatus.INTERRUPTED if message.interrupted else VoiceEntryStatus.COMPLETED
         try:

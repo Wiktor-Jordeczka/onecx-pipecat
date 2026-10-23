@@ -32,12 +32,13 @@ class _Harness:
         attach_persistence(self.user, self.assistant, save, emit)
 
     async def user_said(self, content) -> None:
-        await self.user.handlers["on_user_turn_started"](None, None, None)
+        await self.user.handlers["on_user_turn_started"](None, None)
         await self.user.handlers["on_user_turn_stopped"](
             None, None, SimpleNamespace(content=content)
         )
 
     async def assistant_said(self, content: str, interrupted: bool = False) -> None:
+        await self.assistant.handlers["on_assistant_turn_started"](None)
         await self.assistant.handlers["on_assistant_turn_stopped"](
             None, SimpleNamespace(content=content, interrupted=interrupted)
         )

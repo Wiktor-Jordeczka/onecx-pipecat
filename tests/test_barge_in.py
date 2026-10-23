@@ -67,3 +67,67 @@ def test_barge_in_interrupts_the_bot_and_persists_an_interrupted_entry(slow_tts)
 
     assistant = [e for e in persistence.entries if e.kind is VoiceEntryKind.ASSISTANT]
     assert [e.status for e in assistant] == [VoiceEntryStatus.INTERRUPTED]
+
+
+def _start(ws) -> None:
+    ws.send_json(
+        {
+            "type": "start_session",
+            "agent_id": "onecx-agent",
+            "chat_id": "chat-1",
+            "apm_principal_token": "t-1",
+        }
+    )
+    assert ws.receive_json()["kind"] == "session_ready"
+
+
+def _speak(ws) -> None:
+    ws.send_json({"type": "user_started_speaking"})
+    ws.send_json({"type": "audio", "audio": _AUDIO})
+    ws.send_json({"type": "user_stopped_speaking"})
+
+
+def test_a_failed_human_save_does_not_drop_the_next_turn():
+    container = fake_container(token="t-1")
+    persistence = FakePersistence(fail_human=True)
+    container.persistence = persistence  # type: ignore[assignment]
+    client = TestClient(create_app(container))
+    with client.websocket_connect("/ws/voice") as ws:
+        _start(ws)
+        _speak(ws)
+        first = _until(ws, "error")
+        assert first[-1]["code"] == "persistence_failed"
+        persistence.fail_human = False
+        _speak(ws)
+        events = _until(ws, "turn_complete")
+        assert [e["kind"] for e in events].count("turn_complete") == 1
+
+        ws.send_json({"type": "stop"})
+        _until(ws, "session_closed")
+
+    assert [e.kind for e in persistence.entries] == [
+        VoiceEntryKind.HUMAN,
+        VoiceEntryKind.ASSISTANT,
+    ]
+
+
+def test_barge_in_after_a_slow_human_save_persists_the_interrupted_turn_first(slow_tts):
+    container = fake_container(token="t-1")
+    persistence = FakePersistence(human_delay=0.3)
+    container.persistence = persistence  # type: ignore[assignment]
+    client = TestClient(create_app(container))
+    with client.websocket_connect("/ws/voice") as ws:
+        _start(ws)
+        _speak(ws)
+        _until(ws, "assistant_text")
+        ws.send_json({"type": "user_started_speaking"})
+        events = _until(ws, "turn_complete")
+        assert "interrupted" in [e["kind"] for e in events]
+
+        ws.send_json({"type": "stop"})
+        _until(ws, "session_closed")
+
+    assert [(e.kind, e.status) for e in persistence.entries] == [
+        (VoiceEntryKind.HUMAN, VoiceEntryStatus.COMPLETED),
+        (VoiceEntryKind.ASSISTANT, VoiceEntryStatus.INTERRUPTED),
+    ]
