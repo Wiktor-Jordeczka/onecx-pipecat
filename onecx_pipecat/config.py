@@ -83,7 +83,6 @@ class SpeechSettings(BaseSettings):
 class PersistenceSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERSISTENCE__")
 
-    backend: str = "inmemory"
     # "chat" saves to onecx-chat-svc; "inmemory" is for tests and local runs.
     backend: Literal["chat", "inmemory"] = "chat"
     max_entries_per_session: int = 512

@@ -32,6 +32,7 @@ class _Harness:
         attach_persistence(self.user, self.assistant, save, emit)
 
     async def user_said(self, content) -> None:
+        await self.user.handlers["on_user_turn_started"](None, None, None)
         await self.user.handlers["on_user_turn_stopped"](
             None, None, SimpleNamespace(content=content)
         )
@@ -70,15 +71,17 @@ async def test_blank_turns_stay_ephemeral():
     assert h.emitted == []
 
 
-async def test_human_persistence_failure_is_reported_and_skips_the_reply_entry():
-    h = _Harness(FakePersistence(fail_human=True))
+async def test_human_persistence_failure_does_not_skip_the_next_turn_after_llm_error():
+    store = FakePersistence(fail_human=True)
+    h = _Harness(store)
     await h.user_said("hello")
-    await h.assistant_said("answer")
-    assert h.store.entries == []
+    # The failed LLM turn has no assistant-stopped event to consume the failure.
     assert [(e.kind, e.code) for e in h.emitted] == [("error", "persistence_failed")]
+    store.fail_human = False
     await h.user_said("again")
     await h.assistant_said("answer 2")
-    assert [e.kind for e in h.emitted].count("turn_complete") == 0
+    assert [e.kind for e in store.entries] == [VoiceEntryKind.HUMAN, VoiceEntryKind.ASSISTANT]
+    assert [e.kind for e in h.emitted].count("turn_complete") == 1
 
 
 async def test_assistant_persistence_failure_emits_error_without_turn_complete():

@@ -80,6 +80,8 @@ def test_ws_malformed_handshake_is_reported_and_ignored():
         ready = ws.receive_json()
         assert ready["kind"] == "session_ready"
         assert ready["schema_version"] == "1"
+        ws.send_json({"type": "stop"})
+        assert _until(ws, "session_closed")[-1]["reason"] == "client_stopped"
 
 
 def test_ws_voice_turn_streams_transcript_text_audio_and_completion():

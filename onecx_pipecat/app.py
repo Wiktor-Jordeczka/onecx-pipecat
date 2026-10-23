@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from dataclasses import asdict
 from importlib import metadata
 from uuid import uuid4
@@ -83,11 +84,13 @@ def create_app(container: AppContainer, expiry_check_seconds: float = 5.0) -> Fa
                     return
             watcher = asyncio.create_task(watch_expiry())
             await session.run_pipeline(websocket)
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, asyncio.CancelledError):
             return
         finally:
             await session.release()
             if watcher is not None:
                 watcher.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watcher
 
     return app

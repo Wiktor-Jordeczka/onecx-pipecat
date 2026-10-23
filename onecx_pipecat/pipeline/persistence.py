@@ -9,6 +9,7 @@ neither persisted nor acknowledged with ``turn_complete``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -30,23 +31,37 @@ def attach_persistence(
     emit: Emit,
 ) -> None:
     human_failed = False
+    human_save_done: asyncio.Future[None] | None = None
+
+    @user.event_handler("on_user_turn_started")
+    async def on_user_turn_started(_aggregator, _strategy, _message) -> None:
+        nonlocal human_failed, human_save_done
+        human_failed = False
+        human_save_done = asyncio.get_running_loop().create_future()
 
     @user.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_aggregator, _strategy, message) -> None:
-        nonlocal human_failed
+        nonlocal human_failed, human_save_done
+        if human_save_done is None:
+            human_save_done = asyncio.get_running_loop().create_future()
         text = (message.content or "").strip()
         if not text:
+            human_save_done.set_result(None)
             return
         try:
             await save(VoiceEntry(kind=VoiceEntryKind.HUMAN, text=text))
         except Exception as exc:  # noqa: BLE001 - reported as a typed error, no fabricated history
             human_failed = True
             await emit(ErrorEvent(code="persistence_failed", message=f"human entry: {exc}"))
+        finally:
+            if not human_save_done.done():
+                human_save_done.set_result(None)
 
     @assistant.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(_aggregator, message) -> None:
-        nonlocal human_failed
-        skip, human_failed = human_failed, False
+        if human_save_done is not None:
+            await human_save_done
+        skip = human_failed
         text = message.content.strip()
         if skip or not text:
             return
