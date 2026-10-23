@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "Pipecat application foundation for authenticated voice sessions."
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "pipecat-ai[mcp]>=1.0.0,<2.0.0",
+    "pipecat-ai[mcp,anthropic,aws]>=1.0.0,<2.0.0",
     "fastapi>=0.110,<1.0.0",
     "uvicorn[standard]>=0.29,<1.0.0",
     "pydantic>=2.6,<3.0.0",
@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9.0.0",
     "pytest-asyncio>=0.23,<1.0.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.4,<1.0.0",
 ]
 
@@ -27,6 +28,7 @@ package = false
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+timeout = 30
 
 [tool.ruff]
 line-length = 100

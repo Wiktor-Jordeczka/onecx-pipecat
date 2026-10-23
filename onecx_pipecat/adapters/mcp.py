@@ -136,6 +136,7 @@ class HttpMcpAdapter:
                     AgentToolSnapshot(
                         tool_name=tool.name,
                         tool_description=tool.description or "",
+                        input_schema=dict(tool.inputSchema or {}),
                         server_name=server.name,
                         server_url=server.url,
                     )

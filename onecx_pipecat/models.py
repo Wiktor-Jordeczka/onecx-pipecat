@@ -52,6 +52,40 @@ class McpServerSnapshot(BaseModel):
     tool_rules: list[ToolRule] = Field(default_factory=list)
 
 
+class ProviderSnapshot(BaseModel):
+    """The LLM provider of the pinned agent (ai-provider ``ProviderConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    type: str
+    llm_url: str = ""
+    auth_mode: str = ""
+    credential_ref: str = ""
+
+
+class ModelSnapshot(BaseModel):
+    """The LLM model of the pinned agent (ai-provider ``ModelConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    model_identifier: str
+    # Opaque JSON string of provider-specific model parameters (ai-provider
+    # ``modelConfig``; not named ``model_config``, which Pydantic reserves).
+    model_params: str = ""
+    communication_mode: str = ""
+
+
+class SkillSnapshot(BaseModel):
+    """A scaffold skill of the pinned agent (ai-provider ``SkillConfiguration``)."""
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    instruction: str = ""
+    position: int = 0
+    source: str = ""
+
+
 class AgentConfigSnapshot(BaseModel):
     """The agent configuration pinned for one voice session.
 
@@ -64,6 +98,13 @@ class AgentConfigSnapshot(BaseModel):
     schema_version: str
     system_prompt: str = ""
     mcp_servers: list[McpServerSnapshot] = Field(default_factory=list)
+    # Pinned voice language (``voice.languageCode``); "" when the configuration
+    # does not specify one, so speech falls back to the configured default.
+    language_code: str = ""
+    agent_name: str = ""
+    provider: ProviderSnapshot | None = None
+    model: ModelSnapshot | None = None
+    skills: list[SkillSnapshot] = Field(default_factory=list)
 
 
 class AgentToolSnapshot(BaseModel):
@@ -73,6 +114,7 @@ class AgentToolSnapshot(BaseModel):
     server_name: str
     server_url: str = ""
     tool_description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class VoiceEntryKind(StrEnum):
@@ -84,6 +126,19 @@ class VoiceEntryKind(StrEnum):
     TOOL_RESULT = "TOOL_RESULT"
 
 
+class VoiceEntryStatus(StrEnum):
+    """Terminal lifecycle state of a durable voice entry.
+
+    A voice entry is written exactly once, already in a terminal state
+    (``COMPLETED`` when the turn ran to its natural end, ``INTERRUPTED`` when
+    the user barged in and cut the assistant output short). Interim streaming
+    states are carried by the wire protocol, never by a persisted entry.
+    """
+
+    COMPLETED = "COMPLETED"
+    INTERRUPTED = "INTERRUPTED"
+
+
 class VoiceEntry(BaseModel):
     """A durable conversation entry (visible or hidden checkpoint)."""
 
@@ -91,6 +146,11 @@ class VoiceEntry(BaseModel):
     text: str
     hidden: bool = False
     idempotency_key: str | None = None
+    # Terminal state the entry was finalized in (see ``VoiceEntryStatus``).
+    status: VoiceEntryStatus = VoiceEntryStatus.COMPLETED
+    # The agent configuration version this entry was produced under; left empty
+    # for now — populating it from the pinned snapshot is tracked in #938.
+    agent_config_version: str = ""
 
 
 class PermissionDecision(BaseModel):

@@ -7,8 +7,9 @@ any field without code changes.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,20 @@ class ChatSettings(BaseSettings):
 
     # Base URL of onecx-chat-svc, used to load a chat by id as the user.
     base_url: str = "http://onecx-chat-svc:8080"
+    # Newest chat messages loaded into the LLM context at session start.
+    history_max_messages: int = 50
+
+
+class AwsSpeechProfile(BaseModel):
+    """The AWS speech profiles for one language.
+
+    A profile pairs the AWS Transcribe language code with the Amazon Polly
+    voice the assistant speaks with, so a single pinned language maps to both
+    STT and TTS deployments.
+    """
+
+    transcribe_language: str
+    polly_voice: str = "Joanna"
 
 
 class SpeechSettings(BaseSettings):
@@ -52,12 +67,24 @@ class SpeechSettings(BaseSettings):
     stt_provider: str = "inmemory"
     tts_provider: str = "inmemory"
     sample_rate_hz: int = 16000
+    # AWS region the Transcribe and Polly profiles live in (aws provider only).
+    region: str = "us-east-1"
+    # Fallback when a pinned agent configuration does not specify a language.
+    default_language: str = "en"
+    # Language code -> {transcribe_language, polly_voice}. A pinned language
+    # that is not a key here is unsupported and produces a typed error.
+    aws_profiles: dict[str, AwsSpeechProfile] = Field(
+        default_factory=lambda: {
+            "en": AwsSpeechProfile(transcribe_language="en-US", polly_voice="Joanna"),
+        }
+    )
 
 
 class PersistenceSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONECX_PERSISTENCE__")
 
-    backend: str = "inmemory"
+    # "chat" saves to onecx-chat-svc; "inmemory" is for tests and local runs.
+    backend: Literal["chat", "inmemory"] = "chat"
     max_entries_per_session: int = 512
 
 
@@ -82,6 +109,30 @@ class McpSettings(BaseSettings):
     timeout_seconds: float = 30.0
 
 
+class CredentialsSettings(BaseSettings):
+    """Operator-provisioned secrets, keyed by the ``credentialRef`` of the agent configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="ONECX_CREDENTIALS__")
+
+    # credentialRef (e.g. ``credential://provider/{id}/api-key``) -> secret.
+    refs: dict[str, SecretStr] = Field(default_factory=dict)
+
+
+class LlmSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ONECX_LLM__")
+
+    # Test/local-dev only: ``inmemory`` replaces the agent's provider with a
+    # deterministic fake. Empty (the default) keeps production fail-closed.
+    provider_override: str = ""
+
+
+class PipelineSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ONECX_PIPELINE__")
+
+    # Seconds without bot/user speech activity before the pipeline ends; None disables.
+    idle_timeout_secs: float | None = None
+
+
 class Settings(BaseSettings):
     """Root configuration for the Pipecat application.
 
@@ -104,6 +155,9 @@ class Settings(BaseSettings):
     persistence: PersistenceSettings = Field(default_factory=PersistenceSettings)
     permission: PermissionSettings = Field(default_factory=PermissionSettings)
     mcp: McpSettings = Field(default_factory=McpSettings)
+    credentials: CredentialsSettings = Field(default_factory=CredentialsSettings)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
+    pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
 
 
 @lru_cache

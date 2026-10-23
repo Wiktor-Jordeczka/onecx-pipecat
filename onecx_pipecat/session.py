@@ -1,29 +1,34 @@
 """Transport-neutral voice-session state machine.
 
-``VoiceSession`` consumes typed commands and returns typed events using the
-replaceable adapters. It knows nothing about WebSocket, JSON, or FastAPI, so
-the same logic drives any transport.
+``VoiceSession`` owns one authenticated session: it starts it (auth, chat,
+permission, pinned configuration, credentials, LLM/STT/TTS, MCP discovery),
+serves ``refresh_token`` / ``stop`` once running, enforces the MCP tool policy
+and runs the one long-lived Pipecat pipeline (see :mod:`onecx_pipecat.pipeline.builder`)
+over the client's WebSocket until stop, token expiry or disconnect.
 
 Starting a session is the whole authentication story: the ``start_session``
-message carries the user's OneCX tokens (never the URL), and the session
-verifies the token, loads the chat as the user, checks the user's voice
-permission, pins the agent configuration, discovers MCP tools once, and
-advertises only the tools resolved to ``ALWAYS_ALLOW`` — each step failing
-closed with a typed ``ErrorEvent``.
+message carries the user's OneCX tokens (never the URL), and every step fails
+closed with a typed ``ErrorEvent``. Only tools resolved to ``ALWAYS_ALLOW`` are
+exposed to the LLM.
 """
 
 from __future__ import annotations
 
-import base64
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
+
+from fastapi import WebSocket
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.frame_processor import FrameProcessor
 
 from onecx_pipecat.adapters.agent_config import AgentConfigError
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.chat import Chat, ChatAccessError
 from onecx_pipecat.adapters.mcp import McpToolResult, propagated_headers
 from onecx_pipecat.adapters.permission import allowed_tools
+from onecx_pipecat.adapters.persistence import PersistenceError
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
@@ -31,12 +36,12 @@ from onecx_pipecat.models import (
     Principal,
     ToolProposal,
     VoiceEntry,
-    VoiceEntryKind,
 )
+from onecx_pipecat.pipeline.builder import build_voice_pipeline
+from onecx_pipecat.pipeline.prompt import compose_system_prompt
+from onecx_pipecat.pipeline.runner import DeferredCloseWebSocket, run_worker
+from onecx_pipecat.pipeline.tools import build_tools_schema
 from onecx_pipecat.protocol import (
-    AssistantAudio,
-    AssistantText,
-    ClientAudio,
     Command,
     DegradedCapability,
     ErrorEvent,
@@ -46,9 +51,16 @@ from onecx_pipecat.protocol import (
     SessionReady,
     StartSession,
     StopSession,
-    Transcript,
-    TurnComplete,
 )
+from onecx_pipecat.services.credentials import CredentialError
+from onecx_pipecat.services.llm import LlmConfigError, build_llm
+from onecx_pipecat.services.speech import (
+    UnsupportedLanguageError,
+    build_stt_service,
+    build_tts_service,
+)
+
+_NORMAL_CLOSURE = 1000
 
 
 class SessionState(StrEnum):
@@ -76,6 +88,16 @@ class VoiceSession:
         self._chat: Chat | None = None
         self._allowed_tools: list[AgentToolSnapshot] = []
         self._start_failed = False
+        self._llm: FrameProcessor | None = None
+        self._stt: FrameProcessor | None = None
+        self._tts: FrameProcessor | None = None
+        self._tools: ToolsSchema | None = None
+        self._system_prompt = ""
+        self._history: list[dict[str, str]] = []
+        self._worker: PipelineWorker | None = None
+        self._ended = False
+        self._final_events: list[Event] = []
+        self._close_code = _NORMAL_CLOSURE
 
     # -- session identity -------------------------------------------------
 
@@ -95,12 +117,12 @@ class VoiceSession:
     def apm_principal_token(self) -> str:
         return self._apm_principal_token
 
+    @property
+    def start_failed(self) -> bool:
+        """True when the session was closed because ``start_session`` was rejected."""
+        return self._start_failed
+
     async def dispatch(self, command: Command) -> list[Event]:
-        if self.state is SessionState.READY and not isinstance(
-            command, (RefreshToken, StopSession)
-        ):
-            if expired := self.check_expiry():
-                return expired
         match command:
             case StartSession():
                 return await self._start(
@@ -109,18 +131,11 @@ class VoiceSession:
                     command.apm_principal_token,
                     command.authorization,
                 )
-            case ClientAudio():
-                return await self._audio(command.audio)
             case RefreshToken():
                 return await self._refresh(command.apm_principal_token, command.authorization)
             case StopSession():
-                return self._stop()
+                return await self._stop()
         return [ErrorEvent(code="unknown_command", message="unsupported command")]
-
-    @property
-    def start_failed(self) -> bool:
-        """True when the session was closed because ``start_session`` was rejected."""
-        return self._start_failed
 
     def check_expiry(self) -> list[Event]:
         """End a READY session whose tokens have expired; no-op otherwise."""
@@ -157,6 +172,69 @@ class VoiceSession:
             server, proposal, propagated_headers(self._apm_principal_token, self._authorization)
         )
 
+    # -- pipeline ---------------------------------------------------------
+
+    async def run_pipeline(self, websocket: WebSocket) -> None:
+        """Run the session's Pipecat pipeline over ``websocket`` until it ends.
+
+        Ends on ``stop``, token expiry (:meth:`end_pipeline`), disconnect or
+        :meth:`release`. The final events are then sent and the socket closed.
+        """
+        if self._llm is None or self._stt is None or self._tts is None or self._tools is None:
+            raise RuntimeError("session is not started")
+        if not self._ended:
+            self._worker = build_voice_pipeline(
+                websocket=DeferredCloseWebSocket(websocket),
+                session_id=self.session_id,
+                settings=self._container.settings,
+                system_prompt=self._system_prompt,
+                tools=self._tools,
+                llm=self._llm,
+                stt=self._stt,
+                tts=self._tts,
+                history=self._history,
+                save_entry=self._save_entry,
+                dispatch=self.dispatch,
+            )
+            try:
+                await run_worker(self._worker)
+            finally:
+                self._worker = None
+        self.state = SessionState.CLOSED
+        try:
+            for event in self._final_events or [SessionClosed(reason="pipeline_ended")]:
+                await websocket.send_json(event.model_dump())
+            await websocket.close(code=self._close_code)
+        except Exception:  # noqa: BLE001 - the client may already be gone
+            pass
+
+    async def _save_entry(self, entry: VoiceEntry) -> str:
+        """Append to the anchored chat with the current (refreshable) user token."""
+        if self._chat is None or self._principal is None:
+            raise PersistenceError("session has no chat")
+        return await self._container.persistence.append(
+            self._chat.chat_id,
+            entry,
+            apm_principal_token=self._apm_principal_token,
+            user_id=self._principal.subject,
+        )
+
+    async def end_pipeline(self, events: list[Event], close_code: int) -> None:
+        """Stop the pipeline; ``events`` are sent after it, then the socket closes."""
+        self._final_events = events
+        self._close_code = close_code
+        self._ended = True
+        if self._worker is not None:
+            await self._worker.cancel(reason="session_ended")
+
+    async def release(self) -> None:
+        """Cancel the pipeline if it is still running; idempotent."""
+        self._ended = True
+        if self._worker is not None:
+            await self._worker.cancel(reason="released")
+
+    # -- start / refresh / stop -------------------------------------------
+
     def _reset(self) -> None:
         """Drop everything a half-finished start may have established."""
         self._principal = None
@@ -164,7 +242,9 @@ class VoiceSession:
         self._authorization = ""
         self._snapshot = None
         self._chat = None
+        self._history = []
         self._allowed_tools = []
+        self._llm = self._stt = self._tts = self._tools = None
 
     def _fail_start(self, code: str, message: str) -> list[Event]:
         self._reset()
@@ -200,6 +280,16 @@ class VoiceSession:
             return self._fail_start("chat_not_accessible", f"chat {chat_id!r} not accessible")
         self._chat = chat
 
+        # 2b. Load the chat history to seed the LLM context; fail closed on error.
+        try:
+            self._history = await self._container.persistence.history(
+                chat_id,
+                apm_principal_token=apm_principal_token,
+                limit=self._container.settings.chat.history_max_messages,
+            )
+        except PersistenceError as exc:
+            return self._fail_start("chat_not_accessible", f"chat history unavailable: {exc}")
+
         # 3. Check the user's existing OneCX voice permission.
         if not await self._container.permission.has_voice_permission(
             principal, apm_principal_token
@@ -212,17 +302,30 @@ class VoiceSession:
                 principal.tenant_id, agent_id, apm_principal_token
             )
         except AgentConfigError as exc:
-            # Fail closed: a new session without valid configuration cannot start.
             return self._fail_start("config_unavailable", str(exc))
         self._snapshot = snapshot
 
-        # 5. Discover tools once on the agent's own MCP servers, forwarding the user's tokens.
+        # 5. Build the LLM and speech services for the pinned provider and language.
+        settings = self._container.settings
+        try:
+            llm = build_llm(snapshot, settings, self._container.credentials)
+            stt = build_stt_service(settings, snapshot.language_code)
+            tts = build_tts_service(settings, snapshot.language_code)
+        except (CredentialError, LlmConfigError) as exc:
+            return self._fail_start("config_unavailable", str(exc))
+        except UnsupportedLanguageError as exc:
+            return self._fail_start("unsupported_language", str(exc))
+
+        # 6. Discover tools once on the agent's own MCP servers, forwarding the user's tokens.
         discovery = await self._container.mcp.discover(
             snapshot.mcp_servers, propagated_headers(apm_principal_token, authorization)
         )
 
-        # 6. Advertise only tools the pinned configuration resolves to ALWAYS_ALLOW.
+        # 7. Expose only tools the pinned configuration resolves to ALWAYS_ALLOW.
         self._allowed_tools = allowed_tools(snapshot, discovery.tools)
+        self._llm, self._stt, self._tts = llm, stt, tts
+        self._tools = build_tools_schema(llm, self, snapshot, self._allowed_tools)
+        self._system_prompt = compose_system_prompt(snapshot)
 
         self.state = SessionState.READY
         events: list[Event] = [
@@ -232,7 +335,7 @@ class VoiceSession:
                 schema_version=snapshot.schema_version,
             )
         ]
-        # 7. Report each skipped MCP server; the session continues degraded.
+        # 8. Report each skipped MCP server; the session continues degraded.
         for server_name, reason in discovery.degraded:
             events.append(DegradedCapability(reason=f"{server_name}: {reason}"))
         return events
@@ -264,40 +367,10 @@ class VoiceSession:
         self._authorization = authorization
         return []
 
-    async def _audio(self, audio: bytes) -> list[Event]:
-        if self.state is not SessionState.READY:
-            return [ErrorEvent(code="illegal_state", message="session is not listening")]
-
-        if expired := self.check_expiry():
-            return expired
-
-        transcript = await self._container.stt.transcribe(audio)
-        if not transcript:
-            # Partial, abandoned, and noise-only input stays ephemeral.
-            return []
-
-        events: list[Event] = [Transcript(text=transcript, state="FINAL")]
-        await self._container.persistence.append(
-            self.session_id, VoiceEntry(kind=VoiceEntryKind.HUMAN, text=transcript)
-        )
-
-        reply = f"heard: {transcript}"
-        events.append(AssistantText(text=reply, status="COMPLETED"))
-        entry_id = await self._container.persistence.append(
-            self.session_id, VoiceEntry(kind=VoiceEntryKind.ASSISTANT, text=reply)
-        )
-
-        try:
-            audio_out = await self._container.tts.synthesize(reply)
-            events.append(
-                AssistantAudio(audio=base64.b64encode(audio_out).decode("ascii"), state="COMPLETE")
-            )
-        except Exception:  # noqa: BLE001 - TTS failure must not discard the answer
-            events.append(AssistantAudio(audio="", state="FAILED"))
-
-        events.append(TurnComplete(entry_id=entry_id))
-        return events
-
-    def _stop(self) -> list[Event]:
+    async def _stop(self) -> list[Event]:
+        events: list[Event] = [SessionClosed(reason="client_stopped")]
         self.state = SessionState.CLOSED
-        return [SessionClosed(reason="client_stopped")]
+        self._final_events = events
+        self._close_code = _NORMAL_CLOSURE
+        self._ended = True
+        return events

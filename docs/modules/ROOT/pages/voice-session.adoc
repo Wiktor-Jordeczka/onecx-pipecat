@@ -1,119 +1,185 @@
 = Voice session
 
-The application exposes a WebSocket voice endpoint at `/ws/voice`. The
-session logic is transport-neutral: a `VoiceSession` consumes typed commands
-and returns typed events, so the WebSocket carrier can later be replaced (for
-example with WebRTC) without changing session behavior.
+The application exposes a WebSocket voice endpoint at `/ws/voice`. A voice
+session has two phases on the same socket:
 
-== Authentication
+. *Handshake* — plain JSON messages handled by `VoiceSession` until a valid
+`start_session` has authenticated the user and pinned the agent.
+. *Pipeline* — the session builds one long-lived Pipecat pipeline and hands the
+socket to it. Pipecat's `FastAPIWebsocketTransport` and the OneCX frame
+serializer carry all further traffic.
+
+NOTE: Protocol version 2 replaces the earlier request/response turn protocol.
+The client now streams audio and signals push-to-talk boundaries explicitly.
+
+== Authentication and start
 
 The connection is accepted without authentication and is authenticated by the
 first client message. A `start_session` command carries a OneCX token in the
-`apm_principal_token` field; the session authenticates it before doing anything
-else:
+`apm_principal_token` field. The session then:
 
-. The token's signature, issuer, and expiry are verified against the Keycloak
-JWKS by the authentication adapter.
-. Chat access for `chat_id` is checked with the token propagated to the
-chat service.
-. The user's existing voice permission is checked.
-. The agent configuration for `agent_id` is pinned for the whole session.
+. verifies the token (signature, issuer, expiry) against the Keycloak JWKS;
+. checks chat access for `chat_id` with the token propagated to the chat service;
+. loads the chat's message history (newest `chat.history_max_messages`
+`HUMAN`/`ASSISTANT` messages) to seed the LLM context after the system prompt;
+a failure fails the start with `chat_not_accessible`, because a session that
+silently forgot the conversation would be wrong;
+. checks the user's existing voice permission;
+. pins the agent configuration (provider, model, system prompt, skills, MCP
+servers) for the whole session;
+. builds the LLM (provider credentials are resolved from
+`ONECX_CREDENTIALS__REFS`) and the speech services for the pinned language;
+. discovers MCP tools once and keeps only those that resolve to `ALWAYS_ALLOW`.
 
-Every step fails closed: an invalid or expired token, a chat the user is
-neither the owner of nor a participant in, a missing voice permission, or an
-unpinnable agent configuration sends a typed `error` event followed by
-`session_closed` (reason `start_failed`), then closes the connection with code
-`1008`. A failed start leaves no session state behind and cannot be retried on
-the same connection.
+Every step fails closed: a typed `error` event, then `session_closed` (reason
+`start_failed`), then the connection closes with code `1008`. A failed start
+leaves no state behind and cannot be retried on the same connection. Before a
+valid `start_session`, malformed messages only produce `error{bad_command}`.
 
-The legacy query-string form (`?token=...`) is no longer accepted, and the
-endpoint takes no query parameters at all. A connection that presents any
-query parameter is closed with code `1008` before it is accepted.
+The endpoint takes no query parameters. A connection that presents any query
+parameter (for example `?token=...`) is closed with code `1008` before it is
+accepted.
 
-== Commands
+== Pipeline
 
-Commands are JSON objects with a `type` field, sent by the client.
+[source]
+----
+transport.input() -> session control -> STT -> transcript events -> user aggregator
+  -> LLM -> TTS -> wire events -> transport.output() -> assistant aggregator
+----
+
+* `transport.input()` / `transport.output()` are Pipecat's
+`FastAPIWebsocketTransport` with `OnecxFrameSerializer`.
+* *Session control* handles `refresh_token`, `stop` and malformed commands.
+* *STT*, *LLM* and *TTS* are Pipecat services (AWS Transcribe / Polly and the
+agent's configured OpenAI, Ollama or Anthropic provider). With the `inmemory`
+speech provider and `ONECX_LLM__PROVIDER_OVERRIDE=inmemory` deterministic
+in-memory services are used for tests and local development.
+* The user and assistant context aggregators use `ExternalUserTurnStrategies`:
+turns are delimited by the client (push-to-talk), there is no server-side VAD.
+* The LLM context holds the composed system prompt and one tool schema: the
+allowed MCP tools plus `activate_skill` when the agent has usable skills.
+MCP tool calls go through `VoiceSession.invoke_tool`, which keeps the
+`ALWAYS_ALLOW` check, the no-redirect rule and the user-token propagation.
+* The pipeline idle timeout is `ONECX_PIPELINE__IDLE_TIMEOUT_SECS` (default:
+disabled; the session ends at token expiry).
+
+== Client to server
+
+Messages are JSON objects with a `type` field.
 
 [cols="1,3",options="header"]
 |===
-| `type` | Payload
+| `type` | Meaning
 
 | `start_session`
-| `agent_id` (string), `chat_id` (string), and `apm_principal_token`
-(string). Authenticates the token, checks chat access and voice permission,
-pins the agent configuration snapshot, discovers MCP tools once, and moves
-the session to the listening state. This is the first command the session
-accepts.
+| Handshake only. `agent_id`, `chat_id`, `apm_principal_token`, optional `authorization`.
+
+| `user_started_speaking`
+| Push-to-talk press. Starts a user turn and interrupts the assistant if it is speaking (barge-in).
 
 | `audio`
-| `audio` (base64 string) — a finalized chunk of captured microphone audio.
+| `audio`: base64 PCM16 mono at `speech.sample_rate_hz`. Send any number of chunks between started and stopped.
 
-| `stop`
-| none — ends the session and returns to typed chat.
+| `user_stopped_speaking`
+| Push-to-talk release. Ends the user turn; the transcript goes to the LLM.
 
 | `refresh_token`
-| `apm_principal_token` (string). Replaces the session's token with a fresh
-one after authentication, so the current session survives a token rotation.
+| `apm_principal_token` (and optional `authorization`). Replaces the session tokens; must belong to the same user.
+
+| `stop`
+| Ends the session; the server answers `session_closed{client_stopped}` and closes with 1000.
 |===
 
-== Events
+Anything else (invalid JSON, unknown `type`, invalid base64) is answered with
+`error{bad_command}`; the session continues.
 
-Events are JSON objects with a `kind` field, emitted by the session.
+== Server to client
 
 [cols="1,3",options="header"]
 |===
 | `kind` | Meaning
 
-| `session_ready` | The session is listening; carries `session_id`, `agent_id`, and `schema_version` (the pinned `AgentConfiguration.schemaVersion`).
-| `transcript` | Finalized speech recognition; carries `text` and `state`.
-| `assistant_text` | Assistant caption; carries `text` and `status`.
-| `assistant_audio` | Synthesized speech; carries base64 `audio` and `state` (`COMPLETE` or `FAILED`).
-| `turn_complete` | The turn finished; carries the persisted assistant `entry_id`.
-| `error` | A typed failure; carries `code` and `message`.
-| `session_closed` | The session ended; carries a `reason`.
-| `degraded_capability` | An MCP server could not be reached during the once-per-session tool discovery; the session continues without that server's tools.
+| `session_ready` | Handshake done; carries `session_id`, `agent_id`, `schema_version`, `protocol_version`.
+| `degraded_capability` | An MCP server was unreachable at discovery; its tools are missing.
+| `transcript` | `text` and `state` (`PARTIAL` interim, `FINAL`). Only the final text becomes a durable entry.
+| `assistant_text` | A streamed chunk of the text being spoken (`text`), in step with the audio.
+| `assistant_audio` | Base64 PCM16 `audio` with `sample_rate`, `num_channels`.
+| `bot_started_speaking` / `bot_stopped_speaking` | Playback state of the assistant.
+| `interrupted` | The user barged in; drop queued assistant audio.
+| `turn_complete` | `entry_id` of the persisted assistant entry; sent only after it was persisted.
+| `error` | `code` and `message`; see below.
+| `session_closed` | `reason`; the last message before the socket closes.
 |===
 
-The `error` event carries one of the following `code` values:
+Example turn:
 
-* `authentication_failed` — the token is missing, invalid, or expired.
-* `chat_not_accessible` — chat access for `chat_id` was denied.
-* `voice_not_permitted` — the user has no voice permission.
-* `config_unavailable` — the agent configuration could not be pinned (voice
-disabled, conflict, or the agent service unreachable).
-* `token_expired` — the session token expired mid-session; the session is
-closed. Expiry is checked on every command and periodically while idle.
-* `principal_mismatch` — a `refresh_token` carried a token for a different
-subject or tenant than the user who started the session; the token is not
-applied.
-* `illegal_state` — a command arrived in the wrong state (audio before
-`start_session`, a second `start_session`, or a `refresh_token`/audio after
-the session closed).
+[source,json]
+----
+{"type": "user_started_speaking"}
+{"type": "audio", "audio": "AAAB..."}
+{"type": "user_stopped_speaking"}
 
-== Behavior
+{"kind": "transcript", "text": "what is the weather", "state": "FINAL"}
+{"kind": "bot_started_speaking"}
+{"kind": "assistant_audio", "audio": "AAAA...", "sample_rate": 16000, "num_channels": 1}
+{"kind": "assistant_text", "text": "It is sunny."}
+{"kind": "bot_stopped_speaking"}
+{"kind": "turn_complete", "entry_id": "abc:2"}
+----
 
-* Starting a session without valid configuration fails closed with an `error`
-of code `config_unavailable`; the session is closed.
-* Audio before `start_session`, or a second `start_session`, is rejected with
-an `error` of code `illegal_state`.
-* Only finalized transcripts are persisted. Empty, noise-only input stays
-ephemeral and emits no events.
-* A completed turn persists one human entry and one assistant entry through the
-persistence adapter.
-* Speech synthesis failure keeps the assistant text and emits `assistant_audio`
-with `state` `FAILED`, so the answer is never discarded.
-* MCP tools are discovered once, when the session starts. The authenticated
-token is propagated to each MCP server. A server that fails is skipped, and a
-`degraded_capability` event is emitted for it; the session continues with the
-tools that resolved successfully.
-* Only tools whose execution policy resolves to `ALWAYS_ALLOW` are advertised
-to the assistant. Tools that resolve to `ALWAYS_ASK` or `DENY` are withheld and
-`VoiceSession.invoke_tool` refuses to invoke them. MCP redirects are not
-followed, so the user's token is never forwarded to another host.
-* The agent configuration is pinned once at `start_session` and is not
-re-read for the lifetime of the session.
-* A `refresh_token` command swaps in a new token after authentication. The
-token must belong to the same subject and tenant as the session's user,
-otherwise it is rejected with `principal_mismatch`. An
-expired token ends the session with an `error` of code `token_expired` and a
-`session_closed` event.
+== Turns, barge-in and persistence
+
+* *Turn:* `user_started_speaking`, audio, `user_stopped_speaking` (Pipecat
+external turn strategies). The user aggregator adds the final transcript to the
+LLM context and triggers the LLM; the reply is spoken sentence by sentence.
+* *Barge-in:* `user_started_speaking` while the assistant speaks makes the user
+aggregator broadcast an `InterruptionFrame`. Pending LLM and TTS output is
+cancelled, the output transport drops queued audio, the client receives
+`interrupted`, and the assistant aggregator closes the turn as interrupted.
+* *Persistence* is driven by the aggregators' turn events and writes to the
+anchored chat (onecx-chat-svc, with the user's current token; the in-memory
+backend is for tests). The user turn ends
+with one `HUMAN` entry (empty or noise-only input stays ephemeral). The
+assistant turn ends with one `ASSISTANT` entry with status `COMPLETED` or
+`INTERRUPTED`, containing the text that was actually spoken. `turn_complete` is
+sent only after the assistant entry is stored. If nothing had been spoken yet
+when the user interrupted, no assistant entry is written. chat-svc's `Message`
+has no status field, so an `INTERRUPTED` entry is stored as its spoken text.
+* *Persistence failure:* `error{persistence_failed}` and no `turn_complete`; no
+history is fabricated. Pipecat starts the LLM before the user-turn event
+fires, so after a failed `HUMAN` write the reply of that turn is spoken but
+neither persisted nor acknowledged.
+
+== Errors
+
+The `error` event carries one of the following codes.
+
+Start: `authentication_failed`, `chat_not_accessible`, `voice_not_permitted`,
+`config_unavailable` (agent configuration, provider/model, credential or LLM
+setup unusable), `unsupported_language` (no AWS speech profile for the pinned
+language).
+
+Running session:
+
+* `token_expired` — tokens expired; followed by `session_closed{token_expired}`
+and close code 1008. Checked periodically, also while idle.
+* `principal_mismatch` — `refresh_token` for a different user; not applied.
+* `illegal_state` — a command in the wrong state (for example a second `start_session`).
+* `bad_command` — malformed client message.
+* `stt_failed`, `llm_failed`, `tts_failed` — non-fatal service failures; the
+session stays usable for the next turn.
+* `persistence_failed` — see above.
+
+== Closing
+
+The session ends on `stop`, token expiry, a failed start or client disconnect.
+In every case the Pipecat worker is cancelled, the final events are sent and the
+socket is closed (1008 on start failure and expiry, 1000 otherwise).
+
+== Speech provider and language
+
+The speech provider and its language mapping come from configuration (see
+xref:configuration.adoc[Configuration]). With the `aws` provider the pinned
+language selects the AWS Transcribe language and the Amazon Polly voice; a
+language without a profile fails the start with `unsupported_language`.

@@ -4,8 +4,9 @@ The application composes a set of replaceable adapters. Each capability is a
 `typing.Protocol` in `onecx_pipecat/adapters/`. The OneCX boundaries
 (authentication, agent configuration, chat, permission, MCP) ship only their
 real implementation, which `onecx_pipecat/adapters/factory.py` always builds;
-tests substitute fakes from `tests/fakes.py`. Speech and persistence ship
-in-memory implementations until real ones exist. Swapping a capability means
+tests substitute fakes from `tests/fakes.py`. Persistence ships onecx-chat-svc
+(`persistence.backend=chat`, default) and an in-memory implementation; speech and LLM are Pipecat services
+(see `onecx_pipecat/services/`). Swapping a capability means
 writing a new class that satisfies the same `Protocol` and pointing the
 corresponding factory function at it.
 
@@ -82,24 +83,38 @@ equals the chat-svc `userId`.
 
 == Speech
 
-* Protocols: `SttAdapter.transcribe(audio_bytes) -> str`,
-  `TtsAdapter.synthesize(text) -> bytes`
-* In-memory: `InMemorySttAdapter`, `InMemoryTtsAdapter`
-
-Deterministic; the STT returns a fixed transcript for non-empty input and the
-TTS returns UTF-8 bytes of the input text.
+Speech is no longer an adapter. `onecx_pipecat/services/speech.py` builds
+Pipecat STT and TTS services per session for the pinned language
+(`build_stt_service`, `build_tts_service`): `AWSTranscribeSTTService` and
+`AWSPollyTTSService` for `aws`, or the deterministic `InMemorySTT` and
+`InMemoryTTS` from `services/inmemory.py`.
 
 == Persistence
 
-* Protocol: `ConversationPersistence` — `append(session_id, entry) -> id`,
-  `list_entries(session_id) -> list[VoiceEntry]`,
-  `get(session_id, entry_id) -> VoiceEntry | None`
-* In-memory: `InMemoryPersistence`
+* Protocol: `ConversationPersistence`, keyed by chat id --
+  `append(chat_id, entry, *, apm_principal_token, user_id) -> id` and
+  `history(chat_id, *, apm_principal_token, limit) -> list[{role, content}]`
+* Chat: `HttpChatPersistence` (default)
+* In-memory: `InMemoryPersistence` (tests and local runs)
 
-Assigns a stable entry id per session and preserves order. It enforces
-`persistence.max_entries_per_session` by evicting the oldest entry when a
-session exceeds the cap.
+`HttpChatPersistence` calls onecx-chat-svc with the service token and the
+user's propagated `apm-principal-token`; failures raise `PersistenceError`.
 
+* `append` sends `POST /internal/chats/{id}/messages` with `skipAIProcessing`
+(so chat-svc stores the message without forwarding it to the AI service):
+`HUMAN` becomes `{type: HUMAN, userId, text}`, `ASSISTANT` becomes
+`{type: ASSISTANT, text}`. The `Message` schema has no status, so an
+`INTERRUPTED` assistant entry is stored as the text that was actually spoken.
+Other entry kinds are rejected. The id comes from the response body or the
+`Location` header.
+* `history` sends `GET /internal/chats/{id}/messages` (404 means no messages
+yet), orders by `creationDate`, keeps `HUMAN` as `user` and `ASSISTANT` as
+`assistant` (system, unknown and blank messages are skipped) and returns the
+newest `limit` messages.
+
+`InMemoryPersistence` assigns a stable entry id per key and preserves order.
+It enforces `persistence.max_entries_per_session` by evicting the oldest entry
+when the cap is exceeded.
 == Permission
 
 * Protocol: `PermissionAdapter` —

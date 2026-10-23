@@ -6,10 +6,8 @@ from onecx_pipecat.adapters.factory import (
     build_permission,
     build_persistence,
     build_service_auth,
-    build_stt,
-    build_tts,
 )
-from onecx_pipecat.config import Settings
+from onecx_pipecat.config import PersistenceSettings, Settings
 
 
 def test_factory_builds_real_onecx_adapters():
@@ -24,9 +22,7 @@ def test_factory_builds_real_onecx_adapters():
     assert type(build_mcp(s)).__name__ == "HttpMcpAdapter"
 
 
-def test_factory_keeps_inmemory_speech_and_persistence():
-    # No real speech/persistence adapters exist yet.
-    s = Settings()
-    assert type(build_stt(s)).__name__ == "InMemorySttAdapter"
-    assert type(build_tts(s)).__name__ == "InMemoryTtsAdapter"
+def test_factory_selects_persistence_backend():
+    assert type(build_persistence(Settings())).__name__ == "HttpChatPersistence"
+    s = Settings(persistence=PersistenceSettings(backend="inmemory"))
     assert type(build_persistence(s)).__name__ == "InMemoryPersistence"

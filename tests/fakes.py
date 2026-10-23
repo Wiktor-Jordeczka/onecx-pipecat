@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -10,7 +11,8 @@ from onecx_pipecat.adapters.agent_config import AgentConfigError
 from onecx_pipecat.adapters.auth import AuthenticationError
 from onecx_pipecat.adapters.chat import ChatAccessError
 from onecx_pipecat.adapters.mcp import McpDiscovery, McpToolResult
-from onecx_pipecat.config import Settings
+from onecx_pipecat.adapters.persistence import PersistenceError
+from onecx_pipecat.config import LlmSettings, Settings
 from onecx_pipecat.container import AppContainer
 from onecx_pipecat.models import (
     AgentConfigSnapshot,
@@ -18,6 +20,7 @@ from onecx_pipecat.models import (
     McpServerSnapshot,
     Principal,
     ToolProposal,
+    VoiceEntry,
 )
 
 
@@ -133,7 +136,7 @@ def fake_container(
     *, token: str = "tok-user", chat_id: str = "chat-1", agent_id: str = "onecx-agent"
 ) -> AppContainer:
     """An app container with fakes for every OneCX boundary and one usable user/chat/agent."""
-    container = AppContainer(Settings())
+    container = AppContainer(Settings(llm=LlmSettings(provider_override="inmemory")))
     auth, chat, agent_config = FakeAuth(), FakeChat(), FakeAgentConfig()
     auth.seed(token, subject="user-1", tenant_id="local", roles=["voice"])
     chat.register(chat_id, topic="general")
@@ -145,4 +148,53 @@ def fake_container(
     container.agent_config = agent_config
     container.permission = FakePermission()
     container.mcp = FakeMcp()
+    container.persistence = FakePersistence()  # type: ignore[assignment]
     return container
+
+
+class FakePersistence:
+    """A recording persistence that can be made to fail on the human/assistant write."""
+
+    def __init__(
+        self,
+        *,
+        fail_human: bool = False,
+        fail_assistant: bool = False,
+        human_delay: float = 0.0,
+    ) -> None:
+        self.human_delay = human_delay
+        self.entries: list[VoiceEntry] = []
+        self.fail_human = fail_human
+        self.fail_assistant = fail_assistant
+        self.appended_with: list[tuple[str, str, str]] = []
+        self.history_messages: list[dict[str, str]] = []
+        self.fail_history = False
+
+    async def append(
+        self,
+        session_id: str,
+        entry: VoiceEntry,
+        *,
+        apm_principal_token: str = "",
+        user_id: str = "",
+    ) -> str:
+        self.appended_with.append((session_id, apm_principal_token, user_id))
+        if entry.kind.value == "HUMAN" and self.human_delay:
+            await asyncio.sleep(self.human_delay)
+        if (entry.kind.value == "HUMAN" and self.fail_human) or (
+            entry.kind.value == "ASSISTANT" and self.fail_assistant
+        ):
+            raise RuntimeError("persistence boom")
+        entry_id = f"{session_id}:{len(self.entries) + 1}"
+        self.entries.append(entry)
+        return entry_id
+
+    async def list_entries(self, session_id: str) -> list[VoiceEntry]:
+        return list(self.entries)
+
+    async def history(
+        self, chat_id: str, *, apm_principal_token: str = "", limit: int = 50
+    ) -> list[dict[str, str]]:
+        if self.fail_history:
+            raise PersistenceError("history boom")
+        return self.history_messages[-limit:]

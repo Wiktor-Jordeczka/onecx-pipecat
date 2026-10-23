@@ -7,9 +7,9 @@ def test_container_binds_real_onecx_adapters():
     assert s.auth == "JwtAuthAdapter"
     assert s.agent_config == "HttpAgentConfigAdapter"
     assert s.chat == "HttpChatAdapter"
-    assert s.stt == "InMemorySttAdapter"
-    assert s.tts == "InMemoryTtsAdapter"
-    assert s.persistence == "InMemoryPersistence"
+    assert s.stt == "inmemory"
+    assert s.tts == "inmemory"
+    assert s.persistence == "HttpChatPersistence"
     assert s.permission == "HttpPermissionAdapter"
     assert s.mcp == "HttpMcpAdapter"
 

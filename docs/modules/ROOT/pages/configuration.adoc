@@ -91,6 +91,11 @@ permission services (never to MCP servers).
 | Base URL of onecx-chat-svc; `HttpChatAdapter` calls
 `GET /internal/chats/{id}` to load the chat as the user.
 
+| `chat.history_max_messages`
+| `50`
+| Newest chat messages (`GET /internal/chats/{id}/messages`) loaded into the
+LLM context at session start.
+
 | `speech.stt_provider`
 | `inmemory`
 | STT provider identifier.
@@ -103,13 +108,31 @@ permission services (never to MCP servers).
 | `16000`
 | Expected audio sample rate in hertz.
 
+| `speech.region`
+| `us-east-1`
+| AWS region the Transcribe and Polly profiles live in (`aws` provider only).
+
+| `speech.default_language`
+| `en`
+| Fallback language when the pinned agent configuration does not specify one.
+A pinned language that is not configured in `speech.aws_profiles` is
+unsupported and produces a typed `unsupported_language` error.
+
+| `speech.aws_profiles`
+| `en` -> `{transcribe_language: "en-US", polly_voice: "Joanna"}`
+| Map of language code to its AWS speech profile, read only when the `aws`
+provider is selected. Each profile pairs an AWS Transcribe language code
+(`transcribe_language`) with an Amazon Polly voice (`polly_voice`, default
+`Joanna`), so one pinned language maps to both the STT and TTS deployments.
+
 | `persistence.backend`
-| `inmemory`
-| Persistence backend identifier.
+| `chat`
+| `chat` saves voice turns to onecx-chat-svc and loads the chat history
+(`HttpChatPersistence`); `inmemory` is for tests and local development.
 
 | `persistence.max_entries_per_session`
 | `512`
-| Soft cap on entries kept per session.
+| Soft cap on entries kept per session (`inmemory` backend only).
 
 | `permission.base_url`
 | `http://onecx-permission-svc:8080`
@@ -138,7 +161,46 @@ permission.
 | HTTP timeout for MCP calls. MCP server URLs are *not* configured here: they
 come from each agent's configuration (`mcpServers[].url`).
 
+| `credentials.refs`
+| `{}`
+| JSON map of `credentialRef` -> secret (`ONECX_CREDENTIALS__REFS`), e.g.
+`{"credential://provider/p1/api-key": "sk-..."}`. The LLM provider's
+`credentialRef` from the agent configuration is looked up here; an unknown or
+blank reference fails the session start closed (`config_unavailable`). Values
+are `SecretStr`: never logged, exposed by `/healthz`, or sent to the client.
+
 |===
+
+== LLM provider mapping
+
+The pinned agent configuration selects the LLM (`provider` + `model`). A
+configuration without a supported `provider.type` or with a blank
+`model.modelIdentifier` is rejected at session start.
+
+[cols="15,85",options="header"]
+|===
+| `provider.type` | Pipecat service
+
+| `OPENAI`
+| `OpenAILLMService`. API key from `credentialRef` (when `authMode` is
+`API_KEY`); `llmUrl` becomes `base_url`, so OpenAI-compatible endpoints work
+(a key is optional when `llmUrl` is set).
+
+| `OLLAMA`
+| `OLLamaLLMService` with `llmUrl` as `base_url`. Credentials are ignored
+(Pipecat sends a fixed placeholder key).
+
+| `ANTHROPIC`
+| `AnthropicLLMService`. API key from `credentialRef` is required; `llmUrl`
+overrides the API base URL.
+|===
+
+`authMode=OAUTH` is not supported. `model.modelConfig` (a JSON object string)
+maps to service settings for `temperature`, `max_tokens`/`maxTokens` and
+`top_p`/`topP`; other keys are ignored and invalid JSON fails the start.
+
+Scaffold skills (entries with a name and instruction) are advertised in the
+system prompt and exposed through the `activate_skill(name)` function.
 
 == Real and in-memory adapters
 
@@ -149,12 +211,17 @@ and MCP — always use their real adapter (`JwtAuthAdapter`,
 run on: a token that cannot be verified against the issuer's JWKS, or a
 service call whose client-credentials token cannot be obtained, fails closed.
 
-Speech and persistence still use in-memory adapters because no real ones
-exist yet; `persistence.max_entries_per_session` is enforced by
-`InMemoryPersistence`, and `speech.*` is loaded but not yet read.
+Speech defaults to deterministic in-memory Pipecat services because no
+deployment has selected the `aws` provider yet. Selecting
+`stt_provider`/`tts_provider` to `aws` builds Pipecat's AWS Transcribe and
+Polly services per session from `speech.region`, `speech.default_language`, and
+`speech.aws_profiles`. The agent's own LLM provider is always used; only
+tests and local development may set `ONECX_LLM__PROVIDER_OVERRIDE=inmemory`.
+`persistence.max_entries_per_session` is enforced by `InMemoryPersistence`,
+which is used only with `ONECX_PERSISTENCE__BACKEND=inmemory`.
 
-Not yet read by any adapter: `agent_config.default_agent_id`,
-`agent_config.default_snapshot_version`, and `persistence.backend`.
+Not yet read by any adapter: `agent_config.default_agent_id` and
+`agent_config.default_snapshot_version`.
 
 == Precedence
 
