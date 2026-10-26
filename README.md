@@ -20,6 +20,17 @@ chmod +x .githooks/pre-commit
 git config core.hooksPath .githooks
 ```
 
+## Container image and Helm chart
+
+```bash
+docker build -t onecx-pipecat .
+docker run --rm -p 8080:8080 onecx-pipecat
+helm dependency build helm && helm lint helm
+```
+
+See the Deployment page in the documentation for configuration, the Helm
+chart and the CI workflows.
+
 ## Documentation
 
 Antora module under `docs/` (component descriptor `docs/antora.yml`, site

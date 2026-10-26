@@ -1,0 +1,95 @@
+app:
+  name: pipecat
+  image:
+    repository: "onecx/onecx-pipecat"
+    tag: 999-SNAPSHOT
+
+  # The library chart defaults to the Quarkus health paths, which do not exist here.
+  livenessProbe:
+    url: /healthz
+  readinessProbe:
+    url: /healthz
+  startupProbe:
+    url: /healthz
+
+  # Explicit values stop the library chart from applying its JVM defaults.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # Keycloak realm URL (the token issuer, e.g. https://<host>/realms/onecx).
+  # It is injected as ONECX_AUTH__ISSUER; the JWKS and token endpoint are derived
+  # from it. Normally provided by the platform via global.oidc.client.url; set it
+  # here (or per environment) when the global value is absent, otherwise the chart
+  # renders the unresolved Quarkus placeholder.
+  # oidc:
+  #   client:
+  #     url: https://keycloak.example/realms/onecx
+
+  template:
+    oidc_client_url: ONECX_AUTH__ISSUER
+    oidc_client_id: ONECX_AUTH__CLIENT_ID
+    oidc_client_credential: ONECX_AUTH__CLIENT_SECRET
+
+  env:
+    ONECX_HOST: "0.0.0.0"
+    ONECX_SPEECH__STT_PROVIDER: "aws"
+    ONECX_SPEECH__TTS_PROVIDER: "aws"
+    ONECX_SPEECH__REGION: "eu-central-1"
+    ONECX_SPEECH__SAMPLE_RATE_HZ: "16000"
+    # Environment-specific overrides (the app defaults already match the OneCX
+    # in-cluster service names on port 8080):
+    # ONECX_AUTH__AUDIENCE: "onecx-pipecat"
+    # ONECX_AUTH__JWKS: ""
+    # ONECX_AGENT_CONFIG__BASE_URL: "http://onecx-ai-provider-svc:8080"
+    # ONECX_CHAT__BASE_URL: "http://onecx-chat-svc:8080"
+    # ONECX_PERMISSION__BASE_URL: "http://onecx-permission-svc:8080"
+
+  # AWS Transcribe/Polly credentials come from a pre-existing Secret that is
+  # not managed by this chart (keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+  # optional AWS_SESSION_TOKEN).
+  envCustom:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: onecx-pipecat-aws
+          key: AWS_ACCESS_KEY_ID
+          optional: true
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: onecx-pipecat-aws
+          key: AWS_SECRET_ACCESS_KEY
+          optional: true
+    - name: AWS_SESSION_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: onecx-pipecat-aws
+          key: AWS_SESSION_TOKEN
+          optional: true
+
+  operator:
+    keycloak:
+      client:
+        enabled: true
+        spec:
+          type: machine
+          kcConfig:
+            # ai-provider (agent configuration), chat (history and persistence), permission.
+            defaultClientScopes: [ ocx-ai:read, ocx-chat:all, ocx-pm:read ]
+    microservice:
+      spec:
+        description: OneCX Pipecat voice service
+        name: OneCX Pipecat
+
+  # Routing is environment-specific and disabled by default. For the browser to
+  # reach /ws/voice, enable it per environment, e.g.:
+  # routing:
+  #   enabled: true
+  #   type: ingress        # or traefik
+  #   path: /ws/voice
+  # The ingress must allow WebSocket upgrades and a long idle timeout.

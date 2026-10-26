@@ -10,3 +10,5 @@ site/
 graphify-out/
 .claude/settings.json
 .copilot/skills/graphify/
+helm/charts/
+helm/Chart.lock

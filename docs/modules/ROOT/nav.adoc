@@ -3,5 +3,6 @@
 xref:index.adoc[]
 xref:local-setup.adoc[]
 xref:configuration.adoc[]
+xref:deployment.adoc[]
 xref:adapter-interfaces.adoc[]
 xref:voice-session.adoc[]

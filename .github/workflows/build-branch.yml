@@ -1,0 +1,27 @@
+name: Build Feature Branch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+      - '!main'
+      - '!fix/[0-9]+.[0-9]+.x'
+      - '![0-9]+.x'
+      - '!dependabot/**'
+
+jobs:
+  docker:
+    uses: onecx/ci-common/.github/workflows/docker-build.yml@v1
+    secrets: inherit
+    with:
+      push: false
+      artifact: ''
+      samoDockerFile: Dockerfile
+  helm:
+    uses: onecx/ci-common/.github/workflows/helm-build.yml@v1
+    secrets: inherit
+    needs: docker
+    with:
+      helmDir: 'helm'
+      artifact: ''
