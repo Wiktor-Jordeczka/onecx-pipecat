@@ -46,3 +46,26 @@ def test_chat_base_url_env_override(monkeypatch):
     monkeypatch.setenv("ONECX_CHAT__BASE_URL", "https://chat.other")
     s = Settings(_env_file=None)
     assert s.chat.base_url == "https://chat.other"
+
+
+def test_keycloak_env_names_configure_auth(monkeypatch):
+    monkeypatch.setenv("KEYCLOAK_SERVER_URL", "https://kc.example/")
+    monkeypatch.setenv("KEYCLOAK_REALM", "onecx")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "pipecat")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "s3cr3t")
+    s = Settings()
+    assert s.auth.issuer == "https://kc.example/realms/onecx"
+    assert s.auth.client_id == "pipecat"
+    assert s.auth.client_secret == "s3cr3t"
+
+
+def test_explicit_issuer_wins_over_keycloak_url_and_realm(monkeypatch):
+    monkeypatch.setenv("KEYCLOAK_SERVER_URL", "https://kc.example")
+    monkeypatch.setenv("KEYCLOAK_REALM", "onecx")
+    monkeypatch.setenv("ONECX_AUTH__ISSUER", "https://other")
+    assert Settings().auth.issuer == "https://other"
+
+
+def test_server_port_env_sets_port(monkeypatch):
+    monkeypatch.setenv("SERVER_PORT", "9000")
+    assert Settings().port == 9000
