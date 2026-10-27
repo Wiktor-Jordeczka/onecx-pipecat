@@ -1,0 +1,613 @@
+= Deployment
+
+The application ships as a container image and a Helm chart, both built by
+GitHub Actions.
+
+== Image
+
+The `Dockerfile` in the repository root is a two-stage, uv-based build on
+`python:3.12-slim-bookworm`. The builder installs the locked production
+dependencies (`uv sync --frozen --no-dev`); the runtime stage copies the
+virtualenv and `onecx_pipecat/` only and runs as the non-root user `1001`.
+
+The image listens on `0.0.0.0` (`ONECX_HOST`) and port `8080`. The port is read
+from `SERVER_PORT` (or `ONECX_PORT`). It is published as
+`ghcr.io/onecx/onecx-pipecat` for `linux/amd64`. Builds from `main` and the
+maintenance branches (`fix/<major>.<minor>.x`, `<major>.x`) are tagged with the
+version and the branch name; release tags get the release version.
+
+Build and run it locally:
+
+[source,shell]
+----
+docker build -t onecx-pipecat .
+docker run --rm -p 8080:8080 \
+  -e ONECX_AUTH__ISSUER=https://keycloak.example/realms/onecx \
+  -e ONECX_AUTH__CLIENT_SECRET=... \
+  onecx-pipecat
+curl -s http://127.0.0.1:8080/healthz
+----
+
+== Helm chart
+
+The chart lives in `helm/` and is named `onecx-pipecat`. It wraps the OneCX
+library chart `helm-quarkus-app` (alias `app`, from
+`oci://ghcr.io/onecx/charts`), so every setting sits under `app:` in
+`helm/values.yaml`. CI rewrites the chart name, version, `appVersion` and
+`app.image.*`; the checked-in `0.0.0` and `999-SNAPSHOT` values are
+placeholders.
+
+[source,shell]
+----
+helm dependency build helm
+helm lint helm
+helm template onecx-pipecat helm --set app.image.tag=test
+----
+
+The chart defaults:
+
+* Liveness, readiness and startup probes all use `GET /healthz` (the library
+chart defaults to Quarkus paths that do not exist here).
+* Explicit `resources` (requests `100m` / `256Mi`, limits `1000m` / `1Gi`).
+* `ONECX_HOST=0.0.0.0`, AWS Transcribe and Polly in `eu-central-1` at 16 kHz.
+* A Keycloak machine client (`operator.keycloak.client`) with the scopes
+`ocx-ai:read`, `ocx-chat:all` and `ocx-pm:read`. Its generated client id and
+secret are injected as `ONECX_AUTH__CLIENT_ID` and `ONECX_AUTH__CLIENT_SECRET`.
+* The Keycloak realm URL (`global.oidc.client.url` or `app.oidc.client.url`) is
+injected as `ONECX_AUTH__ISSUER`.
+* No database, no permission operator (the `VOICE`/`USE` permission belongs to
+`onecx-ai-ui`) and routing disabled.
+
+== Per-environment setup
+
+Everything below is set per environment, either in a values file passed to
+`helm upgrade --install -f` or through the platform's deployment tooling. The
+names `<release>` and `<ns>` stand for the Helm release name and the target
+namespace. The library chart names the Deployment, Service, Ingress and
+IngressRoute `<release>-pipecat` (release name plus the chart name).
+
+[#aws-speech-credentials]
+=== AWS speech credentials
+
+Transcribe (speech to text) and Polly (text to speech) authenticate with static
+credentials from a Secret that the chart does not create. By default the chart
+reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from
+the Secret `onecx-pipecat-aws` (see `app.envCustom` in `helm/values.yaml`).
+
+.Create the Secret
+* It must be in the *same namespace as the release*: a `secretKeyRef` cannot
+cross namespaces.
+* Keys: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are required;
+`AWS_SESSION_TOKEN` only for temporary credentials.
+
+[source,bash]
+----
+kubectl create secret generic onecx-pipecat-aws -n <ns> \
+  --from-literal=AWS_ACCESS_KEY_ID='AKIA...' \
+  --from-literal=AWS_SECRET_ACCESS_KEY='...'
+# temporary credentials: add --from-literal=AWS_SESSION_TOKEN='...'
+----
+
+The equivalent manifest:
+
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: onecx-pipecat-aws
+  namespace: <ns>
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: AKIA...
+  AWS_SECRET_ACCESS_KEY: "..."
+  # AWS_SESSION_TOKEN: "..."
+----
+
+Do not commit the manifest with real values. Where Secrets are managed
+declaratively, create the same Secret (name, namespace and keys) through the
+mechanism of the environment, for example a sealed secret or an
+`ExternalSecret`; which of these the platform uses is environment-dependent.
+The chart only needs the resulting Secret to exist.
+
+.IAM policy
+Use a dedicated IAM user per environment (not a personal or shared key) with
+only the speech actions. Pipecat opens Transcribe over a pre-signed WebSocket
+URL, so the WebSocket action is the one that is exercised; the HTTP/2 action is
+listed as well so the policy keeps working if the transport changes.
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "transcribe:StartStreamTranscription",
+        "transcribe:StartStreamTranscriptionWebSocket",
+        "polly:SynthesizeSpeech"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+----
+
+The application does not use custom vocabularies, language models or Polly
+lexicons, so there is no resource to scope the statement to and `"Resource": "*"`
+is used. Rotate the access key on the schedule of your environment: create the
+second key, update the Secret, restart the pods (see below), then deactivate
+and delete the old key.
+
+.Why a Secret and not an IAM role
+The application passes no credentials to Pipecat's `AWSTranscribeSTTService`
+and `AWSPollyTTSService`, which read the standard `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` environment variables. There is
+no `AWS_PROFILE` handling in the code. The locked Pipecat release (1.8.1) also
+falls back to the botocore default chain, but only when neither key variable is
+set, and nothing in this repository sets up or tests that path (the library
+chart only references a ServiceAccount by name, it does not create or
+annotate one). Treat the Secret as the supported way; ambient roles such as
+IRSA are untested here.
+
+.When the Secret is missing
+The three references carry `optional: true`, so the pod starts and `/healthz`
+stays `OK` without the Secret or with missing keys; the variables are then
+simply unset. The failure shows up per voice session, not at startup:
+
+* `start_session` still succeeds (credentials are not checked when the speech
+services are built) and the client receives `session_ready`.
+* When the pipeline starts, the Transcribe service cannot sign its connection
+(Pipecat raises `AWS credentials are required` internally) and the client gets
+an error event with code `stt_failed` (`speech recognition failed`).
+* Polly fails on the first synthesis with a botocore error, reported as
+`tts_failed` (`speech synthesis failed`).
+
+The application does not end the session on these errors, so a session without
+credentials stays open but cannot recognise or speak. This is derived from the
+code; it was not run against AWS. Check the pod logs and the Secret first when
+a client reports `stt_failed` for every session. Wrong or expired credentials
+end up in the same two error codes.
+
+.Rotating or changing the Secret
+Environment variables are read once at container start, so a changed Secret
+needs a pod restart. The library chart renders the annotation
+`reloader.stakater.com/auto: "true"` on the Deployment (values
+`operator.reloader.enabled` and `operator.reloader.auto`, both `true` by
+default). It only has an effect when the Stakater Reloader controller runs in
+the cluster, which is environment-dependent; Reloader's `auto` mode is
+documented to reload on changes of any Secret or ConfigMap the workload
+references. Whether it also reacts to a Secret created after the pod started
+(the `optional` case) was not verified; without Reloader, or to be sure:
+
+[source,bash]
+----
+kubectl rollout restart deployment/<release>-pipecat -n <ns>
+----
+
+A restart drops the active voice sessions.
+
+.Using a different Secret name
+`app.envCustom` is a list, and Helm replaces lists instead of merging them.
+Overriding it therefore means restating all three entries:
+
+[source,yaml]
+----
+app:
+  envCustom:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: my-aws-speech
+          key: AWS_ACCESS_KEY_ID
+          optional: true
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: my-aws-speech
+          key: AWS_SECRET_ACCESS_KEY
+          optional: true
+    - name: AWS_SESSION_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: my-aws-speech
+          key: AWS_SESSION_TOKEN
+          optional: true
+----
+
+Remove `optional: true` if you prefer the pod to fail with
+`CreateContainerConfigError` when the Secret is absent. Any further
+`envCustom` entry (for example `ONECX_CREDENTIALS__REFS`, below) belongs in the
+same list.
+
+.Related speech settings
+These are plain values under `app.env` (all are described in
+xref:configuration.adoc[]):
+
+[source,yaml]
+----
+app:
+  env:
+    ONECX_SPEECH__STT_PROVIDER: "aws"          # default "inmemory" (fake STT/TTS)
+    ONECX_SPEECH__TTS_PROVIDER: "aws"
+    ONECX_SPEECH__REGION: "eu-central-1"       # default us-east-1
+    ONECX_SPEECH__SAMPLE_RATE_HZ: "16000"
+    ONECX_SPEECH__AWS_PROFILES: >-
+      {"en":{"transcribe_language":"en-US","polly_voice":"Joanna"},
+       "de":{"transcribe_language":"de-DE","polly_voice":"Vicki"}}
+----
+
+* The region comes only from `ONECX_SPEECH__REGION`; `AWS_REGION` is ignored
+because the application passes the region to Pipecat explicitly.
+* `ONECX_SPEECH__AWS_PROFILES` maps a language code to the Transcribe language
+and the Polly voice. Only `en` exists by default. An agent pinned to a language
+without an entry fails the session start with `unsupported_language`, so add
+every language the environment's agents use.
+* Polly voices and Transcribe languages differ by region. Check that each
+configured voice and language is offered in `ONECX_SPEECH__REGION` (the AWS
+documentation lists availability); the application does not validate this at
+startup.
+* `ONECX_SPEECH__SAMPLE_RATE_HZ` must equal the capture and playback rate of
+chat-ui. Transcribe streaming accepts only 8000 and 16000 Hz, so keep
+`16000` unless chat-ui and Transcribe are both changed.
+* `ONECX_PIPELINE__IDLE_TIMEOUT_SECS` is unset by default, so a session whose
+browser tab stays open never ends by itself. Set it (seconds without user or
+bot speech) to end abandoned sessions.
+
+[#exposing-ws-voice]
+=== Exposing `/ws/voice`
+
+Routing is off by default (`routing.enabled: false`) because the host, the
+ingress controller and the TLS setup differ per environment; without a route
+only in-cluster clients can reach the Service on port `8080`. The browser
+connects to `/ws/voice`, so the route must exist in every environment where
+chat-ui offers voice.
+
+.How the library chart routes
+All keys sit under `app.routing`. `app.routing.type` is `ingress` or `traefik`;
+`global.routing.type`, when set, wins over it.
+
+[cols="1,3"]
+|===
+| Key | Effect
+
+| `enabled`
+| Renders the route at all (default `false`).
+
+| `type`
+| `ingress` renders a `networking.k8s.io/v1` `Ingress`; `traefik` renders a
+`traefik.io/v1alpha1` `IngressRoute`. The default `none` renders nothing even
+with `enabled: true`.
+
+| `path`
+| Ingress: `pathType: Prefix` with this path. IngressRoute:
+`PathPrefix(...)` ANDed with the host. Unset means `/` (Ingress) or the whole
+host (IngressRoute). Nothing is rewritten.
+
+| `host.name`, `host.override`, `default_url`
+| Without `bff` the host is `<name>-<ns>.<default_url>`, where `<name>` is
+`host.name`, or `<release>-pipecat` if unset. `host.override` replaces `<name>-<ns>`;
+`default_url` (or `global.default_url`) is always appended. For example
+`<release>-pipecat-<ns>.example.org`.
+
+| `bff`, `hostName`
+| With `bff: true` the host is `app.routing.hostName` or else
+`global.hostName`, without suffix. This is the way to serve `/ws/voice` on the
+chat-ui host.
+
+| `ingress.annotations`
+| Ingress only. Merged with the chart default
+`ingress.kubernetes.io/ssl-redirect: "false"` (Helm merges maps); to change
+that one, set the same key. Quote numbers (`"3600"`), annotation values must be
+strings.
+
+| `traefik.middleware.enabled`, `.name`
+| Ingress: adds
+`traefik.ingress.kubernetes.io/router.middlewares: <name>-middleware@kubernetescrd`.
+IngressRoute: adds `middlewares: [{name: <name>}]`. The chart does not create
+the Middleware.
+
+| `entryPoints`
+| IngressRoute only; combined with `global.routing.entryPoints`.
+
+| `service.name`, `service.port`
+| Backend; defaults to the release's Service on `8080`.
+|===
+
+The chart renders no `ingressClassName` (the cluster default class applies)
+and no `tls` section. The legacy `ingress.kubernetes.io/ssl-redirect`
+annotation is not the one ingress-nginx reads
+(`nginx.ingress.kubernetes.io/ssl-redirect`), so it does not change redirect
+behaviour there. TLS termination is therefore a controller or platform
+setting.
+
+.Recommended topology
+Serve `/ws/voice` on the *same origin as chat-ui* (the same host, path-based).
+The application has no CORS or `Origin` check, so a different host works only
+if nothing in the path enforces an origin and the browser allows the
+connection; that is up to the environment. The application itself serves at
+`/ws/voice`, so with `path: /ws/voice` no rewrite is needed. If a prefix is
+used (for example `/voice/ws/voice`), the prefix must be stripped before the
+request reaches the pod (a strip-prefix Middleware for Traefik, a
+`rewrite-target` with capture groups for ingress-nginx) and the WebSocket URL
+configured in chat-ui must match the public path. The chart does not provide
+this rewrite.
+
+Nothing between the browser and the pod may append *query parameters*. Tokens
+travel in the first message, and any query string makes the application refuse
+the connection (it closes with code `1008` before accepting; on the wire
+uvicorn answers the upgrade with `HTTP 403`, so it can look like an
+authorisation failure). Watch for auth proxies such as oauth2-proxy, tracking
+and redirect middleware.
+
+.ingress-nginx
+The upgrade headers are handled by ingress-nginx for WebSocket endpoints
+without extra annotations. The proxy timeouts default to 60 seconds, so raise
+them:
+
+[source,yaml]
+----
+app:
+  routing:
+    enabled: true
+    type: ingress
+    path: /ws/voice
+    # host: choose one
+    # - same host as chat-ui:
+    bff: true
+    hostName: onecx.example.org
+    # - or generated: <release>-pipecat-<ns>.<default_url>
+    # default_url: example.org
+    ingress:
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+----
+
+Rendered (excerpt):
+
+[source,yaml]
+----
+kind: Ingress
+metadata:
+  name: <release>-pipecat
+  annotations:
+    ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /ws/voice
+        pathType: Prefix
+        backend:
+          service:
+            name: <release>-pipecat
+            port:
+              number: 8080
+    host: onecx.example.org
+----
+
+.Traefik (IngressRoute)
+Traefik proxies WebSockets without configuration. Its timeouts are *not per
+route*: they are static settings of the Traefik installation (the entrypoint's
+`transport.respondingTimeouts` and the `serversTransport.forwardingTimeouts`),
+so the chart cannot set them. If WebSocket connections are cut after a fixed
+time, ask the platform team to review those settings for the entrypoint used
+(defaults depend on the Traefik version).
+
+[source,yaml]
+----
+app:
+  routing:
+    enabled: true
+    type: traefik
+    bff: true
+    path: /ws/voice
+    entryPoints: [websecure]
+    # traefik:
+    #   middleware:
+    #     enabled: true     # only if a strip-prefix Middleware exists
+    #     name: strip-voice
+global:
+  hostName: onecx.example.org   # usually provided by the platform
+----
+
+This renders an `IngressRoute` on the entry point `websecure` that sends the
+following match to the Service on port `8080`:
+
+[source,text]
+----
+Host(`onecx.example.org`) && PathPrefix(`/ws/voice`)
+----
+
+Without a `tls` section in the route, TLS has to come from the entrypoint
+configuration of Traefik (environment-dependent).
+
+.Idle timeouts and load balancers
+Every hop has its own idle timeout (cloud load balancers such as an AWS ALB or
+NLB commonly default to 60 seconds), and a quiet conversation is not a quiet
+connection. The browser streams audio frames while the microphone is open, the
+Transcribe stream is kept alive with silence every 5 seconds, and uvicorn
+(which the image starts through `onecx_pipecat.main`, with its default
+settings) sends a WebSocket ping every 20 seconds and drops the connection when
+no pong arrives within another 20 seconds. Traffic therefore flows at least
+every 20 seconds, below a 60 second timeout. Still raise the proxy timeouts as
+shown and check every device in the path, including the cloud load balancer;
+how a given device counts ping frames is device-specific. Separately from
+idleness, the session checks every 5 seconds whether its token has expired and
+ends with `token_expired` (close code `1008`) unless chat-ui sent a
+`refresh_token` in time.
+
+.Replicas and sticky sessions
+Sticky sessions are not required. A session lives in memory of the pod that
+accepted the WebSocket, and the connection stays on that pod for as long as it
+lives (a TCP/WebSocket connection is never moved by a Service or an ingress).
+The service keeps no session state in a shared store, and every new connection
+starts with `start_session`, which carries the tokens and the chat id. More
+than one replica is therefore fine: a new connection can land on any pod. A
+restart, rolling update or scale-down of a pod ends the sessions on it, and
+the client has to start a new session.
+
+.Verify
+[source,bash]
+----
+kubectl get ingress -n <ns>                # type: ingress
+kubectl get ingressroute -n <ns>           # type: traefik
+kubectl describe ingress <release>-pipecat -n <ns>
+----
+
+* `/healthz` is only reachable through the route if the route covers it; a
+route limited to `/ws/voice` does not. Use a port-forward instead:
++
+[source,bash]
+----
+kubectl port-forward svc/<release>-pipecat 8080:8080 -n <ns>
+curl -s http://127.0.0.1:8080/healthz
+----
++
+It returns `{"status":"OK","app":"onecx-pipecat","pipecat_version":"...",
+"adapters":{...}}`; `adapters` names the adapter in use for auth, speech,
+chat and so on, which shows whether the real speech providers are active.
+* Check the upgrade through the route, for example with `websocat` (`wscat`
+works the same way):
++
+[source,bash]
+----
+websocat -v wss://<host>/ws/voice
+# connects (HTTP 101); then send {"type":"nonsense"}
+# -> {"kind":"error","code":"bad_command","message":"malformed command"}
+websocat -v 'wss://<host>/ws/voice?x=1'
+# -> the upgrade is refused (HTTP 403); this is the query-string rejection
+----
++
+The first reply proves that the request reaches the application through the
+whole path. A refusal also for the plain URL points to the route, the host,
+TLS or an auth proxy in front of the pod.
+
+=== Per-environment checklist
+
+[cols="2,2,3,1",options="header"]
+|===
+| Value | Where | Example | Required?
+
+| Keycloak realm URL (`ONECX_AUTH__ISSUER`)
+| `global.oidc.client.url` (platform) or `app.oidc.client.url`
+| `https://keycloak.example/realms/onecx`
+| Yes, must equal the `iss` of the `apm-principal-token`. The chart renders an
+unresolved placeholder if neither is set.
+
+| `ONECX_AUTH__AUDIENCE`, `ONECX_AUTH__JWKS`, `ONECX_AUTH__TOKEN_ENDPOINT`
+| `app.env`
+| `ONECX_AUTH__AUDIENCE: "onecx-pipecat"`
+| Only if the defaults do not fit; JWKS and token endpoint are derived from the
+issuer.
+
+| Keycloak client id and secret
+| Operator (`app.operator.keycloak.client`)
+| Injected as `ONECX_AUTH__CLIENT_ID`/`ONECX_AUTH__CLIENT_SECRET`
+| Automatic when the Keycloak operator is available in the environment.
+
+| AWS credentials Secret
+| Secret `onecx-pipecat-aws`, or `app.envCustom`
+| See <<aws-speech-credentials>>
+| Yes for AWS speech. Without it voice sessions fail with `stt_failed`.
+
+| Speech region, languages, rate
+| `app.env`: `ONECX_SPEECH__REGION`, `ONECX_SPEECH__AWS_PROFILES`,
+`ONECX_SPEECH__SAMPLE_RATE_HZ`
+| `eu-central-1`, `{"en":{...},"de":{...}}`, `16000`
+| Region and rate: set by the chart default. Profiles: yes for every language
+the agents use.
+
+| Service URLs
+| `app.env`: `ONECX_AGENT_CONFIG__BASE_URL`, `ONECX_CHAT__BASE_URL`,
+`ONECX_PERMISSION__BASE_URL`
+| `http://onecx-chat-svc:8080`
+| No, defaults to the in-cluster service names on port `8080`.
+
+| Routing
+| `app.routing.*`
+| See <<exposing-ws-voice>>
+| Yes if the browser must reach `/ws/voice`; off by default.
+
+| Provider API keys (`ONECX_CREDENTIALS__REFS`)
+| Secret + `app.envCustom`, or `app.env_secrets`
+| See below
+| Only for agents with a provider `credentialRef`.
+
+| Resources
+| `app.resources`
+| requests `100m`/`256Mi`, limits `1000m`/`1Gi`
+| No, chart defaults apply. Raise them for many concurrent sessions
+(environment-dependent, not measured).
+|===
+
+.Storing `ONECX_CREDENTIALS__REFS`
+The value is a JSON object that maps the exact `credentialRef` string returned
+by ai-provider to the provider API key (see xref:configuration.adoc[]). It
+holds secrets, so keep it out of the checked-in values. Two ways to provide it:
+
+. *Recommended: your own Secret through `app.envCustom`.* Create the Secret
+like the AWS one and add the entry to the same `envCustom` list (restating the
+AWS entries, see above):
++
+[source,yaml]
+----
+app:
+  envCustom:
+    # ... the three AWS entries ...
+    - name: ONECX_CREDENTIALS__REFS
+      valueFrom:
+        secretKeyRef:
+          name: onecx-pipecat-credentials
+          key: ONECX_CREDENTIALS__REFS
+----
+. *`app.env_secrets`.* The chart creates the Secret `<release>-pipecat-env`
+(a map of variable name to value, rendered through `tpl`) and references each
+key by its own name. The values then live in the Helm values, so inject them
+at deploy time from the secret store of the pipeline, for example with
+`--set-file` or an encrypted values file:
++
+[source,yaml]
+----
+app:
+  env_secrets:
+    ONECX_CREDENTIALS__REFS: '{"credential://provider/<id>/api-key":"sk-..."}'
+----
++
+These entries are appended before `envCustom` and have no `optional: true`.
+
+== CI workflows
+
+The workflows in `.github/workflows/` use the shared `onecx/ci-common`
+workflows (`ci.yml` stays the lint and test pipeline).
+
+[cols="1,2"]
+|===
+| Workflow | Trigger and effect
+
+| `Build`
+| Push to `main`, `fix/<major>.<minor>.x`, `<major>.x`. Builds and pushes the
+image, pushes the chart, then sends the `helm-send-event` to `onecx/onecx-chat`.
+
+| `Build Feature Branch`
+| Any other branch. Builds the image and chart without pushing.
+
+| `Build Pull Request`
+| Pull requests to `main` or a fix branch. Builds without pushing.
+
+| `Build Release`
+| Push of a tag. Releases the image and chart, sends the event to
+`onecx/onecx-chat`, and generates the changelog.
+
+| `Create Release Version`, `Create Fix Branch`, `Create new build`
+| Manual (`workflow_dispatch`) release management.
+|===
+
+Release flow: run `Create Release Version`, which creates the tag; the tag
+triggers `Build Release`; the chart event makes `onecx/onecx-chat` update its
+chart dependencies. The workflows rely on the organisation secret `CI_PAT` and
+on the permission to push to `ghcr.io/onecx`.

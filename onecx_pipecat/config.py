@@ -9,13 +9,26 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AuthSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ONECX_AUTH__")
+    # The Keycloak variables below are the unprefixed names the platform
+    # provisions; the ``ONECX_AUTH__`` form stays accepted for each of them.
+    model_config = SettingsConfigDict(env_prefix="ONECX_AUTH__", populate_by_name=True)
 
+    # Keycloak base URL and realm (``KEYCLOAK_SERVER_URL``/``KEYCLOAK_REALM``).
+    # When both are set and ``issuer`` is not, the issuer is
+    # ``{server_url}/realms/{realm}``.
+    server_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("KEYCLOAK_SERVER_URL", "ONECX_AUTH__SERVER_URL"),
+    )
+    realm: str = Field(
+        default="",
+        validation_alias=AliasChoices("KEYCLOAK_REALM", "ONECX_AUTH__REALM"),
+    )
     issuer: str = "https://auth.example"
     audience: str = "onecx-pipecat"
     token_claim_subject: str = "sub"
@@ -25,10 +38,22 @@ class AuthSettings(BaseSettings):
     # Pipecat's own OIDC client credentials, used to authenticate outbound
     # calls to OneCX services the way a BFF does (apm-principal-token is also
     # propagated to act as the user).
-    client_id: str = "onecx-pipecat"
-    client_secret: str = ""
+    client_id: str = Field(
+        default="onecx-pipecat",
+        validation_alias=AliasChoices("KEYCLOAK_CLIENT_ID", "ONECX_AUTH__CLIENT_ID"),
+    )
+    client_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("KEYCLOAK_CLIENT_SECRET", "ONECX_AUTH__CLIENT_SECRET"),
+    )
     # Empty uses ``{issuer}/protocol/openid-connect/token``.
     token_endpoint: str = ""
+
+    @model_validator(mode="after")
+    def _derive_issuer(self) -> AuthSettings:
+        if "issuer" not in self.model_fields_set and self.server_url and self.realm:
+            self.issuer = f"{self.server_url.rstrip('/')}/realms/{self.realm}"
+        return self
 
 
 class AgentConfigSettings(BaseSettings):
@@ -140,11 +165,14 @@ class Settings(BaseSettings):
     typed and the environment mapping stays explicit.
     """
 
-    model_config = SettingsConfigDict(env_prefix="ONECX_", env_nested_delimiter="__")
+    model_config = SettingsConfigDict(
+        env_prefix="ONECX_", env_nested_delimiter="__", populate_by_name=True
+    )
 
     app_name: str = "onecx-pipecat"
     host: str = "127.0.0.1"
-    port: int = 8080
+    # ``SERVER_PORT`` is the name the platform provisions; ``ONECX_PORT`` stays accepted.
+    port: int = Field(default=8080, validation_alias=AliasChoices("SERVER_PORT", "ONECX_PORT"))
     log_level: str = "INFO"
     default_tenant_id: str = "local"
 

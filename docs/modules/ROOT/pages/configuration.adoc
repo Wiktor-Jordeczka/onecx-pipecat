@@ -6,7 +6,7 @@ Nested fields use `__` as the delimiter, so:
 
 [source,shell]
 ----
-ONECX_PORT=9000
+SERVER_PORT=9000
 ONECX_AUTH__ISSUER=https://issuer.example
 ONECX_SPEECH__STT_PROVIDER=aws
 ONECX_PERMISSION__VOICE_RESOURCE=VOICE
@@ -28,7 +28,7 @@ ONECX_PERMISSION__VOICE_RESOURCE=VOICE
 
 | `port`
 | `8080`
-| Port for the HTTP server.
+| Port for the HTTP server. Read from `SERVER_PORT` (or `ONECX_PORT`).
 
 | `log_level`
 | `INFO`
@@ -38,9 +38,18 @@ ONECX_PERMISSION__VOICE_RESOURCE=VOICE
 | `local`
 | Tenant identifier used when a request does not carry one.
 
+| `auth.server_url`
+| (empty)
+| Keycloak base URL. Read from `KEYCLOAK_SERVER_URL` (or `ONECX_AUTH__SERVER_URL`).
+
+| `auth.realm`
+| (empty)
+| Keycloak realm. Read from `KEYCLOAK_REALM` (or `ONECX_AUTH__REALM`).
+
 | `auth.issuer`
 | `https://auth.example`
-| Expected JWT issuer, validated by `JwtAuthAdapter` when verifying the
+| When `auth.server_url` and `auth.realm` are set and no issuer is configured,
+derived as `{server_url}/realms/{realm}`. Expected JWT issuer, validated by `JwtAuthAdapter` when verifying the
 `apm_principal_token` carried in `start_session`.
 
 | `auth.audience`
@@ -60,13 +69,13 @@ refetched when a token carries an unknown `kid` (at most once a minute).
 
 | `auth.client_id`
 | `onecx-pipecat`
-| Client identifier of Pipecat's own OIDC client-credentials grant; the
+| Read from `KEYCLOAK_CLIENT_ID` (or `ONECX_AUTH__CLIENT_ID`). Client identifier of Pipecat's own OIDC client-credentials grant; the
 resulting token is sent as `Authorization: Bearer` to ai-provider, chat, and
 permission services (never to MCP servers).
 
 | `auth.client_secret`
 | (empty)
-| Client secret for Pipecat's OIDC client-credentials grant.
+| Read from `KEYCLOAK_CLIENT_SECRET` (or `ONECX_AUTH__CLIENT_SECRET`). Client secret for Pipecat's OIDC client-credentials grant.
 
 | `auth.token_endpoint`
 | (empty)
